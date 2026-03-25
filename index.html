@@ -80,16 +80,16 @@
   /* ===== FLOATING CTA ===== */
   .float-cta {
     position: fixed;
-    bottom: 0;
-    left: 0;
-    right: 0;
+    bottom: 56px; /* Clear X/LINE in-app browser bottom toolbar */
+    left: 12px;
+    right: 12px;
     z-index: 1000;
-    background: rgba(5, 10, 8, 0.92);
+    background: rgba(5, 10, 8, 0.95);
     backdrop-filter: blur(16px);
     -webkit-backdrop-filter: blur(16px);
-    border-top: 1px solid rgba(6, 199, 85, 0.2);
+    border: 1px solid rgba(6, 199, 85, 0.2);
+    border-radius: 16px;
     padding: 12px 20px;
-    /* X/Twitter/LINE in-app browser bottom bar avoidance */
     padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
     display: flex;
     align-items: center;
