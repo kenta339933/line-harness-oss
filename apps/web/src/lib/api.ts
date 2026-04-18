@@ -114,9 +114,11 @@ export const api = {
       }),
   },
   tags: {
-    list: () =>
-      fetchApi<ApiResponse<Tag[]>>('/api/tags'),
-    create: (data: { name: string; color: string }) =>
+    list: (params?: { accountId?: string }) => {
+      const query = params?.accountId ? '?lineAccountId=' + params.accountId : ''
+      return fetchApi<ApiResponse<Tag[]>>('/api/tags' + query)
+    },
+    create: (data: { name: string; color: string; lineAccountId?: string | null }) =>
       fetchApi<ApiResponse<Tag>>('/api/tags', {
         method: 'POST',
         body: JSON.stringify(data),
@@ -282,9 +284,11 @@ export const api = {
       fetchApi<ApiResponse<null>>(`/api/line-accounts/${id}`, { method: 'DELETE' }),
   },
   conversions: {
-    points: () =>
-      fetchApi<ApiResponse<ConversionPoint[]>>('/api/conversions/points'),
-    createPoint: (data: { name: string; eventType: string; value?: number | null }) =>
+    points: (params?: { accountId?: string }) => {
+      const query = params?.accountId ? '?lineAccountId=' + params.accountId : ''
+      return fetchApi<ApiResponse<ConversionPoint[]>>('/api/conversions/points' + query)
+    },
+    createPoint: (data: { name: string; eventType: string; value?: number | null; lineAccountId?: string | null }) =>
       fetchApi<ApiResponse<ConversionPoint>>('/api/conversions/points', {
         method: 'POST',
         body: JSON.stringify(data),
@@ -324,15 +328,20 @@ export const api = {
       ),
   },
   templates: {
-    list: (category?: string) =>
-      fetchApi<ApiResponse<{ id: string; name: string; category: string; messageType: string; messageContent: string; createdAt: string; updatedAt: string }[]>>(
-        '/api/templates' + (category ? '?' + new URLSearchParams({ category }) : ''),
-      ),
+    list: (category?: string, params?: { accountId?: string }) => {
+      const qs: Record<string, string> = {}
+      if (category) qs.category = category
+      if (params?.accountId) qs.lineAccountId = params.accountId
+      const query = Object.keys(qs).length ? '?' + new URLSearchParams(qs) : ''
+      return fetchApi<ApiResponse<{ id: string; name: string; category: string; messageType: string; messageContent: string; createdAt: string; updatedAt: string }[]>>(
+        '/api/templates' + query,
+      )
+    },
     get: (id: string) =>
       fetchApi<ApiResponse<{ id: string; name: string; category: string; messageType: string; messageContent: string; createdAt: string; updatedAt: string }>>(
         `/api/templates/${id}`,
       ),
-    create: (data: { name: string; category: string; messageType: string; messageContent: string }) =>
+    create: (data: { name: string; category: string; messageType: string; messageContent: string; lineAccountId?: string | null }) =>
       fetchApi<ApiResponse<{ id: string; name: string; category: string; messageType: string; messageContent: string; createdAt: string; updatedAt: string }>>(
         '/api/templates',
         { method: 'POST', body: JSON.stringify(data) },
@@ -436,11 +445,13 @@ export const api = {
       }),
   },
   scoring: {
-    rules: () =>
-      fetchApi<ApiResponse<ScoringRule[]>>('/api/scoring-rules'),
+    rules: (params?: { accountId?: string }) => {
+      const query = params?.accountId ? '?lineAccountId=' + params.accountId : ''
+      return fetchApi<ApiResponse<ScoringRule[]>>('/api/scoring-rules' + query)
+    },
     getRule: (id: string) =>
       fetchApi<ApiResponse<ScoringRule>>(`/api/scoring-rules/${id}`),
-    createRule: (data: { name: string; eventType: string; scoreValue: number }) =>
+    createRule: (data: { name: string; eventType: string; scoreValue: number; lineAccountId?: string | null }) =>
       fetchApi<ApiResponse<ScoringRule>>('/api/scoring-rules', {
         method: 'POST',
         body: JSON.stringify(data),
@@ -459,9 +470,11 @@ export const api = {
   },
   webhooks: {
     incoming: {
-      list: () =>
-        fetchApi<ApiResponse<IncomingWebhook[]>>('/api/webhooks/incoming'),
-      create: (data: { name: string; sourceType?: string; secret?: string | null }) =>
+      list: (params?: { accountId?: string }) => {
+        const query = params?.accountId ? '?lineAccountId=' + params.accountId : ''
+        return fetchApi<ApiResponse<IncomingWebhook[]>>('/api/webhooks/incoming' + query)
+      },
+      create: (data: { name: string; sourceType?: string; secret?: string | null; lineAccountId?: string | null }) =>
         fetchApi<ApiResponse<IncomingWebhook>>('/api/webhooks/incoming', {
           method: 'POST',
           body: JSON.stringify(data),
@@ -475,9 +488,11 @@ export const api = {
         fetchApi<ApiResponse<null>>(`/api/webhooks/incoming/${id}`, { method: 'DELETE' }),
     },
     outgoing: {
-      list: () =>
-        fetchApi<ApiResponse<OutgoingWebhook[]>>('/api/webhooks/outgoing'),
-      create: (data: { name: string; url: string; eventTypes: string[]; secret?: string | null }) =>
+      list: (params?: { accountId?: string }) => {
+        const query = params?.accountId ? '?lineAccountId=' + params.accountId : ''
+        return fetchApi<ApiResponse<OutgoingWebhook[]>>('/api/webhooks/outgoing' + query)
+      },
+      create: (data: { name: string; url: string; eventTypes: string[]; secret?: string | null; lineAccountId?: string | null }) =>
         fetchApi<ApiResponse<OutgoingWebhook>>('/api/webhooks/outgoing', {
           method: 'POST',
           body: JSON.stringify(data),
@@ -554,4 +569,20 @@ export const api = {
     regenerateKey: (id: string) =>
       fetchApi<ApiResponse<{ apiKey: string }>>(`/api/staff/${id}/regenerate-key`, { method: 'POST' }),
   },
+  overview: {
+    list: () =>
+      fetchApi<ApiResponse<OverviewItem[]>>('/api/overview'),
+  },
+}
+
+export type OverviewItem = {
+  accountId: string
+  channelId: string
+  name: string
+  isActive: boolean
+  friendCount: number
+  yesterdayCount: number | null
+  todaySnapshotCount: number | null
+  delta: number | null
+  unreadCount: number
 }
