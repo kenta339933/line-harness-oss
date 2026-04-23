@@ -63,6 +63,7 @@ export type Env = {
     X_HARNESS_URL?: string;  // Optional: X Harness API URL for account linking
     IG_HARNESS_URL?: string;  // Optional: IG Harness API URL for cross-platform linking
     IG_HARNESS_LINK_SECRET?: string;  // Shared secret for IG Harness link-line webhook
+    DISCORD_WEBHOOK_URL?: string;  // Optional: Discord webhook for friend add notifications
   };
   Variables: {
     staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' };
@@ -352,7 +353,7 @@ async function scheduled(
   jobs.push(
     processStepDeliveries(env.DB, defaultLineClient, env.WORKER_URL),
     processScheduledBroadcasts(env.DB, defaultLineClient, env.WORKER_URL),
-    processReminderDeliveries(env.DB, defaultLineClient),
+    processReminderDeliveries(env.DB, defaultLineClient, env.WORKER_URL),
   );
   // キュー処理は1回だけ実行（内部でアカウント別lineClientを解決する）
   // ロック解除: タイムアウトでstuckした配信を復旧

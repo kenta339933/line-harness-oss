@@ -15,10 +15,12 @@ import {
 } from '@line-crm/db';
 import type { LineClient, Message } from '@line-crm/line-sdk';
 import { addJitter, sleep } from './stealth.js';
+import { expandVariables, resolveMetadata } from './step-delivery.js';
 
 export async function processReminderDeliveries(
   db: D1Database,
   lineClient: LineClient,
+  workerUrl?: string,
 ): Promise<void> {
   const now = jstNow();
   const dueReminders = await getDueReminderDeliveries(db, now);
@@ -48,8 +50,17 @@ export async function processReminderDeliveries(
         }
       }
 
+      // Expand template variables ({{name}}, {{uid}}, {{metadata.KEY}}, etc.)
+      // resolveMetadata handles cross-account metadata merge.
+      const resolvedMeta = await resolveMetadata(db, {
+        user_id: (friend as unknown as Record<string, string | null>).user_id,
+        metadata: (friend as unknown as Record<string, string | null>).metadata,
+      });
+      const friendWithMeta = { ...friend, metadata: resolvedMeta } as Parameters<typeof expandVariables>[1];
+
       for (const step of fr.steps) {
-        const message = buildMessage(step.message_type, step.message_content);
+        const expandedContent = expandVariables(step.message_content, friendWithMeta, workerUrl);
+        const message = buildMessage(step.message_type, expandedContent);
         await deliveryClient.pushMessage(friend.line_user_id, [message]);
 
         // Mark as delivered AFTER successful send.
@@ -61,14 +72,14 @@ export async function processReminderDeliveries(
           .bind(lockId, fr.id, step.id)
           .run();
 
-        // メッセージログに記録
+        // メッセージログに記録（展開後のコンテンツを保存）
         const logId = crypto.randomUUID();
         await db
           .prepare(
             `INSERT INTO messages_log (id, friend_id, direction, message_type, content, created_at)
              VALUES (?, ?, 'outgoing', ?, ?, ?)`,
           )
-          .bind(logId, friend.id, step.message_type, step.message_content, jstNow())
+          .bind(logId, friend.id, step.message_type, expandedContent, jstNow())
           .run();
       }
 

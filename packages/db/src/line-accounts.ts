@@ -14,6 +14,7 @@ export interface LineAccount {
   liff_id: string | null;
   is_active: number;
   token_expires_at: string | null;
+  discord_webhook_url: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -71,7 +72,7 @@ export async function getLineAccountByChannelId(
 }
 
 export type UpdateLineAccountInput = Partial<
-  Pick<LineAccount, 'name' | 'channel_access_token' | 'channel_secret' | 'is_active' | 'token_expires_at'>
+  Pick<LineAccount, 'name' | 'channel_access_token' | 'channel_secret' | 'is_active' | 'token_expires_at' | 'discord_webhook_url'>
 >;
 
 export async function updateLineAccount(

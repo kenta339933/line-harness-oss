@@ -66,7 +66,7 @@ webhook.post('/webhook', async (c) => {
   const processingPromise = (async () => {
     for (const event of body.events) {
       try {
-        await handleEvent(db, lineClient, event, channelAccessToken, matchedAccountId, c.env.WORKER_URL || new URL(c.req.url).origin);
+        await handleEvent(db, lineClient, event, channelAccessToken, matchedAccountId, c.env.WORKER_URL || new URL(c.req.url).origin, c.env.DISCORD_WEBHOOK_URL);
       } catch (err) {
         console.error('Error handling webhook event:', err);
       }
@@ -85,6 +85,7 @@ async function handleEvent(
   lineAccessToken: string,
   lineAccountId: string | null = null,
   workerUrl?: string,
+  discordWebhookUrl?: string,
 ): Promise<void> {
   if (event.type === 'follow') {
     const userId =
@@ -119,6 +120,37 @@ async function handleEvent(
       console.log(`[follow] line_account_id set to ${lineAccountId} for friend ${friend.id}`);
     }
 
+    // Discord通知
+    // 優先順位: アカウント別 discord_webhook_url > env.DISCORD_WEBHOOK_URL (グローバルfallback)
+    {
+      let lineAccountName: string | null = null;
+      let effectiveWebhookUrl: string | undefined = discordWebhookUrl;
+      if (lineAccountId) {
+        try {
+          const { getLineAccountById } = await import('@line-crm/db');
+          const account = await getLineAccountById(db, lineAccountId);
+          lineAccountName = account?.name ?? null;
+          // アカウント別Webhookがあれば優先
+          if (account?.discord_webhook_url) {
+            effectiveWebhookUrl = account.discord_webhook_url;
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+      if (effectiveWebhookUrl) {
+        const { notifyNewFriend } = await import('../services/discord-notify.js');
+        await notifyNewFriend(effectiveWebhookUrl, {
+          displayName: friend.display_name,
+          pictureUrl: friend.picture_url,
+          statusMessage: friend.status_message,
+          lineAccountName,
+          lineUserId: userId,
+          friendId: friend.id,
+        });
+      }
+    }
+
     // friend_add シナリオに登録（このアカウントのシナリオのみ）
     const scenarios = await getScenarios(db);
     for (const scenario of scenarios) {
@@ -146,10 +178,10 @@ async function handleEvent(
                 const logId = crypto.randomUUID();
                 await db
                   .prepare(
-                    `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, delivery_type, created_at)
-                     VALUES (?, ?, 'outgoing', ?, ?, NULL, ?, 'reply', ?)`,
+                    `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, delivery_type, line_account_id, created_at)
+                     VALUES (?, ?, 'outgoing', ?, ?, NULL, ?, 'reply', ?, ?)`,
                   )
-                  .bind(logId, friend.id, firstStep.message_type, firstStep.message_content, firstStep.id, jstNow())
+                  .bind(logId, friend.id, firstStep.message_type, firstStep.message_content, firstStep.id, lineAccountId ?? null, jstNow())
                   .run();
 
                 // Advance or complete the friend_scenario
@@ -243,20 +275,43 @@ async function handleEvent(
       event.source.type === 'user' ? event.source.userId : undefined;
     if (!userId) return;
 
-    const friend = await getFriendByLineUserId(db, userId);
-    if (!friend) return;
+    // メッセージ受信時に friend 未登録なら自動登録する
+    // （UTAGE等から移行してきたユーザーや follow イベントを取りこぼした場合の救済）
+    let friend = await getFriendByLineUserId(db, userId);
+    if (!friend) {
+      console.log(`[message] friend未登録のため自動登録: userId=${userId}`);
+      let profile;
+      try {
+        profile = await lineClient.getProfile(userId);
+      } catch (err) {
+        console.error('[message] Failed to get profile for auto-register:', userId, err);
+      }
+      friend = await upsertFriend(db, {
+        lineUserId: userId,
+        displayName: profile?.displayName ?? null,
+        pictureUrl: profile?.pictureUrl ?? null,
+        statusMessage: profile?.statusMessage ?? null,
+      });
+      if (lineAccountId) {
+        await db
+          .prepare('UPDATE friends SET line_account_id = ? WHERE id = ? AND line_account_id IS NULL')
+          .bind(lineAccountId, friend.id)
+          .run();
+      }
+      console.log(`[message] 自動登録完了: friend.id=${friend.id}`);
+    }
 
     const incomingText = textMessage.text;
     const now = jstNow();
     const logId = crypto.randomUUID();
 
-    // 受信メッセージをログに記録
+    // 受信メッセージをログに記録（アカウント分離のため line_account_id を保存）
     await db
       .prepare(
-        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, created_at)
-         VALUES (?, ?, 'incoming', 'text', ?, NULL, NULL, ?)`,
+        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, line_account_id, created_at)
+         VALUES (?, ?, 'incoming', 'text', ?, NULL, NULL, ?, ?)`,
       )
-      .bind(logId, friend.id, incomingText, now)
+      .bind(logId, friend.id, incomingText, lineAccountId ?? null, now)
       .run();
 
     // チャットを作成/更新（ユーザーの自発的メッセージのみ unread にする）
@@ -265,7 +320,7 @@ async function handleEvent(
     const isAutoKeyword = autoKeywords.some(k => incomingText === k);
     const isTimeCommand = /(?:配信時間|配信|届けて|通知)[はを]?\s*\d{1,2}\s*時/.test(incomingText);
     if (!isAutoKeyword && !isTimeCommand) {
-      await upsertChatOnMessage(db, friend.id);
+      await upsertChatOnMessage(db, friend.id, lineAccountId);
     }
 
     // 配信時間設定: 「配信時間は○時」「○時に届けて」等のパターンを検出
@@ -396,10 +451,10 @@ async function handleEvent(
           const outLogId = crypto.randomUUID();
           await db
             .prepare(
-              `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, delivery_type, created_at)
-               VALUES (?, ?, 'outgoing', ?, ?, NULL, NULL, 'reply', ?)`,
+              `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, delivery_type, line_account_id, created_at)
+               VALUES (?, ?, 'outgoing', ?, ?, NULL, NULL, 'reply', ?, ?)`,
             )
-            .bind(outLogId, friend.id, rule.response_type, rule.response_content, jstNow())
+            .bind(outLogId, friend.id, rule.response_type, rule.response_content, lineAccountId ?? null, jstNow())
             .run();
         } catch (err) {
           console.error('Failed to send auto-reply', err);

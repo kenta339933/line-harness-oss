@@ -221,6 +221,7 @@ CREATE TABLE IF NOT EXISTS line_accounts (
   channel_access_token TEXT NOT NULL,
   channel_secret       TEXT NOT NULL,
   is_active            INTEGER NOT NULL DEFAULT 1,
+  discord_webhook_url  TEXT,  -- アカウント別Discord通知Webhook（NULLならenv.DISCORD_WEBHOOK_URLにfallback）
   created_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
