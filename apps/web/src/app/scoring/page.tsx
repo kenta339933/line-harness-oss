@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react'
 import Header from '@/components/layout/header'
 import { api } from '@/lib/api'
 import CcPromptButton from '@/components/cc-prompt-button'
+import { useAccount } from '@/contexts/account-context'
 
 interface ScoringRule {
   id: string
@@ -41,6 +42,7 @@ const ccPrompts = [
 ]
 
 export default function ScoringPage() {
+  const { selectedAccountId } = useAccount()
   const [rules, setRules] = useState<ScoringRule[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -57,7 +59,7 @@ export default function ScoringPage() {
     setLoading(true)
     setError('')
     try {
-      const res = await api.scoring.rules()
+      const res = await api.scoring.rules({ accountId: selectedAccountId || undefined })
       if (res.success) {
         setRules(res.data)
       } else {
@@ -68,7 +70,7 @@ export default function ScoringPage() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [selectedAccountId])
 
   useEffect(() => {
     loadRules()
@@ -94,6 +96,7 @@ export default function ScoringPage() {
         name: form.name,
         eventType: form.eventType,
         scoreValue: Number(form.scoreValue),
+        lineAccountId: selectedAccountId || undefined,
       })
       if (res.success) {
         setShowCreate(false)

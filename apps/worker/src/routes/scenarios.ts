@@ -326,4 +326,76 @@ scenarios.post('/api/scenarios/:id/enroll/:friendId', async (c) => {
   }
 });
 
+/**
+ * POST /api/scenarios/:id/test-send/:friendId
+ * - シナリオの1通目を友だちに即時push（cronを待たない）
+ * - 変数展開して本物を送る。friend_scenarios は触らない（記録はmessages_logのみ）
+ * - 運用デバッグ用。動作確認に使う
+ */
+scenarios.post('/api/scenarios/:id/test-send/:friendId', async (c) => {
+  try {
+    const scenarioId = c.req.param('id');
+    const friendId = c.req.param('friendId');
+    const db = c.env.DB;
+
+    const [scenario, friend] = await Promise.all([
+      getScenarioById(db, scenarioId),
+      getFriendById(db, friendId),
+    ]);
+    if (!scenario) return c.json({ success: false, error: 'Scenario not found' }, 404);
+    if (!friend) return c.json({ success: false, error: 'Friend not found' }, 404);
+
+    const firstStep = scenario.steps[0];
+    if (!firstStep) return c.json({ success: false, error: 'No steps defined in scenario' }, 400);
+
+    // Expand variables (same logic as step-delivery)
+    const { expandVariables, buildMessage, resolveMetadata } = await import('../services/step-delivery.js');
+    const resolvedMeta = await resolveMetadata(db, {
+      user_id: (friend as unknown as Record<string, string | null>).user_id,
+      metadata: (friend as unknown as Record<string, string | null>).metadata,
+    });
+    const friendWithMeta = { ...friend, metadata: resolvedMeta } as Parameters<typeof expandVariables>[1];
+    const expanded = expandVariables(firstStep.message_content, friendWithMeta);
+    const message = buildMessage(firstStep.message_type, expanded);
+
+    // Resolve account-specific LINE client
+    const friendAccountId = (friend as unknown as Record<string, string | null>).line_account_id;
+    let accessToken = c.env.LINE_CHANNEL_ACCESS_TOKEN;
+    if (friendAccountId) {
+      const { getLineAccountById } = await import('@line-crm/db');
+      const account = await getLineAccountById(db, friendAccountId);
+      if (account?.channel_access_token) accessToken = account.channel_access_token;
+    }
+
+    const { LineClient } = await import('@line-crm/line-sdk');
+    const lineClient = new LineClient(accessToken);
+    await lineClient.pushMessage(friend.line_user_id, [message]);
+
+    // Log (expanded content, mimicking step-delivery behavior)
+    const logId = crypto.randomUUID();
+    const { jstNow } = await import('@line-crm/db');
+    await db
+      .prepare(
+        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, line_account_id, created_at)
+         VALUES (?, ?, 'outgoing', ?, ?, NULL, ?, ?, ?)`,
+      )
+      .bind(logId, friend.id, firstStep.message_type, expanded, firstStep.id, friendAccountId ?? null, jstNow())
+      .run();
+
+    return c.json({
+      success: true,
+      data: {
+        sent: true,
+        friendName: friend.display_name,
+        expandedContent: expanded,
+        messageLogId: logId,
+      },
+    });
+  } catch (err) {
+    console.error('POST /api/scenarios/:id/test-send/:friendId error:', err);
+    const msg = err instanceof Error ? err.message : String(err);
+    return c.json({ success: false, error: msg }, 500);
+  }
+});
+
 export { scenarios };

@@ -282,16 +282,29 @@ friends.put('/api/friends/:id/metadata', async (c) => {
 });
 
 // GET /api/friends/:id/messages - get message history
+// アカウント分離: lineAccountId クエリパラメータが渡された場合、そのアカウントのメッセージのみ返す
 friends.get('/api/friends/:id/messages', async (c) => {
   try {
     const friendId = c.req.param('id');
-    const result = await c.env.DB
-      .prepare(
-        `SELECT id, direction, message_type as messageType, content, created_at as createdAt
-         FROM messages_log WHERE friend_id = ? ORDER BY created_at ASC LIMIT 200`,
-      )
-      .bind(friendId)
-      .all<{ id: string; direction: string; messageType: string; content: string; createdAt: string }>();
+    const lineAccountId = c.req.query('lineAccountId') ?? undefined;
+    const result = lineAccountId
+      ? await c.env.DB
+          .prepare(
+            `SELECT id, direction, message_type as messageType, content, created_at as createdAt
+             FROM messages_log
+             WHERE friend_id = ?
+               AND (line_account_id = ? OR line_account_id IS NULL)
+             ORDER BY created_at ASC LIMIT 200`,
+          )
+          .bind(friendId, lineAccountId)
+          .all<{ id: string; direction: string; messageType: string; content: string; createdAt: string }>()
+      : await c.env.DB
+          .prepare(
+            `SELECT id, direction, message_type as messageType, content, created_at as createdAt
+             FROM messages_log WHERE friend_id = ? ORDER BY created_at ASC LIMIT 200`,
+          )
+          .bind(friendId)
+          .all<{ id: string; direction: string; messageType: string; content: string; createdAt: string }>();
     return c.json({ success: true, data: result.results });
   } catch (err) {
     console.error('GET /api/friends/:id/messages error:', err);
@@ -340,14 +353,15 @@ friends.post('/api/friends/:id/messages', async (c) => {
     const message = buildMessage(tracked.messageType, tracked.content, body.altText);
     await lineClient.pushMessage(friend.line_user_id, [message]);
 
-    // Log outgoing message
+    // Log outgoing message（friend の line_account_id でアカウント分離）
     const logId = crypto.randomUUID();
+    const friendAccountId = (friend as unknown as Record<string, unknown>).line_account_id as string | null | undefined;
     await db
       .prepare(
-        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, created_at)
-         VALUES (?, ?, 'outgoing', ?, ?, NULL, NULL, ?)`,
+        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, line_account_id, created_at)
+         VALUES (?, ?, 'outgoing', ?, ?, NULL, NULL, ?, ?)`,
       )
-      .bind(logId, friend.id, messageType, body.content, jstNow())
+      .bind(logId, friend.id, messageType, body.content, friendAccountId ?? null, jstNow())
       .run();
 
     return c.json({ success: true, data: { messageId: logId } });

@@ -240,14 +240,14 @@ async function processSingleDelivery(
   }
   await deliveryClient.pushMessage(friend.line_user_id, [message]);
 
-  // Log outgoing message
+  // Log outgoing message (展開後の本文を保存して管理画面と実配信を一致させる)
   const logId = crypto.randomUUID();
   await db
     .prepare(
-      `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, created_at)
-       VALUES (?, ?, 'outgoing', ?, ?, NULL, ?, ?)`,
+      `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, line_account_id, created_at)
+       VALUES (?, ?, 'outgoing', ?, ?, NULL, ?, ?, ?)`,
     )
-    .bind(logId, friend.id, currentStep.message_type, currentStep.message_content, currentStep.id, jstNow())
+    .bind(logId, friend.id, trackedType, trackedContent, currentStep.id, friendAccountId ?? null, jstNow())
     .run();
 
   // Determine next step (find the step after currentStep in the sorted list)

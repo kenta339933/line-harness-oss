@@ -15,6 +15,7 @@ export interface ChatRow {
   id: string;
   friend_id: string;
   operator_id: string | null;
+  line_account_id: string | null;
   status: string;
   notes: string | null;
   last_message_at: string | null;
@@ -96,14 +97,38 @@ export async function getChatByFriendId(db: D1Database, friendId: string): Promi
   return db.prepare(`SELECT * FROM chats WHERE friend_id = ? ORDER BY created_at DESC LIMIT 1`).bind(friendId).first<ChatRow>();
 }
 
+/** アカウント別の既存チャットを取得（マルチアカウント分離用） */
+export async function getChatByFriendAndAccount(
+  db: D1Database,
+  friendId: string,
+  lineAccountId: string | null | undefined,
+): Promise<ChatRow | null> {
+  if (lineAccountId) {
+    const row = await db
+      .prepare(
+        `SELECT * FROM chats WHERE friend_id = ? AND line_account_id = ? ORDER BY created_at DESC LIMIT 1`,
+      )
+      .bind(friendId, lineAccountId)
+      .first<ChatRow>();
+    if (row) return row;
+  }
+  // lineAccountId なし または 該当アカウント向けチャット未作成 → line_account_id が NULL の旧データを返す
+  return db
+    .prepare(
+      `SELECT * FROM chats WHERE friend_id = ? AND line_account_id IS NULL ORDER BY created_at DESC LIMIT 1`,
+    )
+    .bind(friendId)
+    .first<ChatRow>();
+}
+
 export async function createChat(
   db: D1Database,
-  input: { friendId: string; operatorId?: string },
+  input: { friendId: string; operatorId?: string; lineAccountId?: string | null },
 ): Promise<ChatRow> {
   const id = crypto.randomUUID();
   const now = jstNow();
-  await db.prepare(`INSERT INTO chats (id, friend_id, operator_id, last_message_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`)
-    .bind(id, input.friendId, input.operatorId ?? null, now, now, now).run();
+  await db.prepare(`INSERT INTO chats (id, friend_id, operator_id, line_account_id, last_message_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .bind(id, input.friendId, input.operatorId ?? null, input.lineAccountId ?? null, now, now, now).run();
   return (await getChatById(db, id))!;
 }
 
@@ -125,15 +150,32 @@ export async function updateChat(
   await db.prepare(`UPDATE chats SET ${sets.join(', ')} WHERE id = ?`).bind(...values).run();
 }
 
-/** 友だちからメッセージ受信時にチャットを作成/更新 */
-export async function upsertChatOnMessage(db: D1Database, friendId: string): Promise<ChatRow> {
-  const existing = await getChatByFriendId(db, friendId);
+/**
+ * 友だちからメッセージ受信時にチャットを作成/更新
+ *
+ * lineAccountId が渡された場合、(friend_id, line_account_id) 単位でチャットを分離する。
+ * 同じ LINE ユーザーが複数アカウントをフォローしている場合でも、アカウントごとに
+ * 独立したチャットを保持できるようにする（migration 028 以降）。
+ */
+export async function upsertChatOnMessage(
+  db: D1Database,
+  friendId: string,
+  lineAccountId?: string | null,
+): Promise<ChatRow> {
+  const existing = await getChatByFriendAndAccount(db, friendId, lineAccountId);
   const now = jstNow();
   if (existing) {
     // resolvedだった場合はunreadに戻す
     const newStatus = existing.status === 'resolved' ? 'unread' : existing.status;
     await updateChat(db, existing.id, { status: newStatus, lastMessageAt: now });
+    // 旧チャット(line_account_id が NULL)を初めて触る時は、この機会に正しい account_id を入れておく
+    if (lineAccountId && !existing.line_account_id) {
+      await db
+        .prepare('UPDATE chats SET line_account_id = ? WHERE id = ?')
+        .bind(lineAccountId, existing.id)
+        .run();
+    }
     return (await getChatById(db, existing.id))!;
   }
-  return createChat(db, { friendId });
+  return createChat(db, { friendId, lineAccountId });
 }

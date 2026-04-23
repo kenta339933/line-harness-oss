@@ -19,10 +19,19 @@ const webhooks = new Hono<Env>();
 
 webhooks.get('/api/webhooks/incoming', async (c) => {
   try {
-    const items = await getIncomingWebhooks(c.env.DB);
+    const lineAccountId = c.req.query('lineAccountId') ?? undefined;
+    let sql = 'SELECT * FROM incoming_webhooks';
+    const bindings: unknown[] = [];
+    if (lineAccountId) {
+      sql += ' WHERE (line_account_id = ? OR line_account_id IS NULL)';
+      bindings.push(lineAccountId);
+    }
+    sql += ' ORDER BY created_at DESC';
+    const stmt = bindings.length ? c.env.DB.prepare(sql).bind(...bindings) : c.env.DB.prepare(sql);
+    const result = await stmt.all<{ id: string; name: string; source_type: string; secret: string | null; is_active: number; created_at: string; updated_at: string }>();
     return c.json({
       success: true,
-      data: items.map((w) => ({
+      data: result.results.map((w) => ({
         id: w.id,
         name: w.name,
         sourceType: w.source_type,
@@ -78,10 +87,19 @@ webhooks.delete('/api/webhooks/incoming/:id', async (c) => {
 
 webhooks.get('/api/webhooks/outgoing', async (c) => {
   try {
-    const items = await getOutgoingWebhooks(c.env.DB);
+    const lineAccountId = c.req.query('lineAccountId') ?? undefined;
+    let sql = 'SELECT * FROM outgoing_webhooks';
+    const bindings: unknown[] = [];
+    if (lineAccountId) {
+      sql += ' WHERE (line_account_id = ? OR line_account_id IS NULL)';
+      bindings.push(lineAccountId);
+    }
+    sql += ' ORDER BY created_at DESC';
+    const stmt = bindings.length ? c.env.DB.prepare(sql).bind(...bindings) : c.env.DB.prepare(sql);
+    const result = await stmt.all<{ id: string; name: string; url: string; event_types: string; secret: string | null; is_active: number; created_at: string; updated_at: string }>();
     return c.json({
       success: true,
-      data: items.map((w) => ({
+      data: result.results.map((w) => ({
         id: w.id,
         name: w.name,
         url: w.url,

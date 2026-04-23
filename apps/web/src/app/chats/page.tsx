@@ -31,6 +31,7 @@ interface ChatMessage {
 interface ChatDetail extends Chat {
   friendName: string
   friendPictureUrl: string | null
+  isFollowing?: boolean
   messages?: ChatMessage[]
 }
 
@@ -98,9 +99,10 @@ interface MessageLog {
   createdAt: string
 }
 
-function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
+function DirectMessagePanel({ friendId, friend, lineAccountId, onBack, onSent }: {
   friendId: string
   friend: FriendItem | null
+  lineAccountId?: string | null
   onBack: () => void
   onSent: () => void
 }) {
@@ -113,15 +115,16 @@ function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
     const loadMessages = async () => {
       setLoadingMessages(true)
       try {
+        const accountQuery = lineAccountId ? `?lineAccountId=${lineAccountId}` : ''
         const res = await fetchApi<{ success: boolean; data: MessageLog[] }>(
-          `/api/friends/${friendId}/messages`
+          `/api/friends/${friendId}/messages${accountQuery}`
         )
         if (res.success) setMessages(res.data)
       } catch { /* silent */ }
       setLoadingMessages(false)
     }
     loadMessages()
-  }, [friendId])
+  }, [friendId, lineAccountId])
 
   const handleSend = async () => {
     if (!message.trim() || sending) return
@@ -395,8 +398,9 @@ export default function ChatsPage() {
     }
   }
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Cmd+Enter / Ctrl+Enter で送信。Enter単独は改行
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
       e.preventDefault()
       handleSendMessage()
     }
@@ -494,6 +498,7 @@ export default function ChatsPage() {
             <DirectMessagePanel
               friendId={selectedFriendId}
               friend={allFriends.find((f) => f.id === selectedFriendId) || null}
+              lineAccountId={selectedAccountId}
               onBack={() => setSelectedFriendId(null)}
               onSent={() => { setSelectedFriendId(null); loadChats(); }}
             />
@@ -526,11 +531,22 @@ export default function ChatsPage() {
                     <p className="text-sm font-medium text-gray-900 truncate">
                       {chatDetail.friendName}
                     </p>
-                    <span
-                      className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium mt-1 ${statusConfig[chatDetail.status].className}`}
-                    >
-                      {statusConfig[chatDetail.status].label}
-                    </span>
+                    <div className="flex flex-wrap items-center gap-1 mt-1">
+                      <span
+                        className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${statusConfig[chatDetail.status].className}`}
+                      >
+                        {statusConfig[chatDetail.status].label}
+                      </span>
+                      {chatDetail.isFollowing === false && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700 border border-red-300">
+                          <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M3.707 2.293a1 1 0 00-1.414 1.414l14 14a1 1 0 001.414-1.414l-1.473-1.473A10.014 10.014 0 0019.542 10C18.268 5.943 14.478 3 10 3a9.958 9.958 0 00-4.512 1.074l-1.78-1.781zm4.261 4.26l1.514 1.515a2.003 2.003 0 012.45 2.45l1.514 1.514a4 4 0 00-5.478-5.478z" clipRule="evenodd" />
+                            <path d="M12.454 16.697L9.75 13.992a4 4 0 01-3.742-3.741L2.335 6.578A9.98 9.98 0 00.458 10c1.274 4.057 5.065 7 9.542 7 .847 0 1.669-.105 2.454-.303z" />
+                          </svg>
+                          ブロック中
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
@@ -672,9 +688,8 @@ export default function ChatsPage() {
                     ))}
                   </select>
                 </div>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="text"
+                <div className="flex items-end gap-2">
+                  <textarea
                     value={messageContent}
                     onChange={(e) => {
                       const value = e.target.value
@@ -691,13 +706,14 @@ export default function ChatsPage() {
                     }}
                     onBlur={() => setIsMessageInputFocused(false)}
                     onKeyDown={handleKeyDown}
-                    placeholder="メッセージを入力..."
-                    className="flex-1 text-sm border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-green-500"
+                    placeholder="メッセージを入力... (Cmd/Ctrl+Enter で送信)"
+                    rows={6}
+                    className="flex-1 text-sm border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-green-500 resize-y min-h-[96px] max-h-[400px] overflow-y-auto leading-relaxed"
                   />
                   <button
                     onClick={handleSendMessage}
                     disabled={sending || !messageContent.trim()}
-                    className="px-4 py-2 text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="px-4 py-2 text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0"
                     style={{ backgroundColor: '#06C755' }}
                   >
                     {sending ? '送信中...' : '送信'}

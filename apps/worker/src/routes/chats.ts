@@ -128,8 +128,11 @@ chats.get('/api/chats', async (c) => {
       bindings.push(operatorId);
     }
     if (lineAccountId) {
-      conditions.push('f.line_account_id = ?');
-      bindings.push(lineAccountId);
+      // アカウント別チャット分離 (migration 028): chats.line_account_id で filter
+      // backfill 済みの旧データは friends.line_account_id から埋めてあるため整合性を保つ
+      // chats.line_account_id が NULL のままの孤児データは friends.line_account_id にフォールバック
+      conditions.push('(c.line_account_id = ? OR (c.line_account_id IS NULL AND f.line_account_id = ?))');
+      bindings.push(lineAccountId, lineAccountId);
     }
 
     if (conditions.length > 0) {
@@ -170,15 +173,30 @@ chats.get('/api/chats/:id', async (c) => {
 
     // 友だち情報を取得
     const friend = await c.env.DB
-      .prepare(`SELECT display_name, picture_url, line_user_id FROM friends WHERE id = ?`)
+      .prepare(`SELECT display_name, picture_url, line_user_id, is_following FROM friends WHERE id = ?`)
       .bind(item.friend_id)
-      .first<{ display_name: string | null; picture_url: string | null; line_user_id: string }>();
+      .first<{ display_name: string | null; picture_url: string | null; line_user_id: string; is_following: number | null }>();
 
-    // チャットに関連するメッセージログも取得
-    const messages = await c.env.DB
-      .prepare(`SELECT id, friend_id, direction, message_type, content, created_at FROM messages_log WHERE friend_id = ? ORDER BY created_at ASC LIMIT 200`)
-      .bind(item.friend_id)
-      .all();
+    // チャットに関連するメッセージログも取得（chat の line_account_id でフィルタしてアカウント分離）
+    const chatAccountId = (item as unknown as { line_account_id?: string | null }).line_account_id ?? null;
+    const messages = chatAccountId
+      ? await c.env.DB
+          .prepare(
+            `SELECT id, friend_id, direction, message_type, content, created_at
+             FROM messages_log
+             WHERE friend_id = ?
+               AND (line_account_id = ? OR line_account_id IS NULL)
+             ORDER BY created_at ASC LIMIT 200`,
+          )
+          .bind(item.friend_id, chatAccountId)
+          .all()
+      : await c.env.DB
+          .prepare(
+            `SELECT id, friend_id, direction, message_type, content, created_at
+             FROM messages_log WHERE friend_id = ? ORDER BY created_at ASC LIMIT 200`,
+          )
+          .bind(item.friend_id)
+          .all();
 
     return c.json({
       success: true,
@@ -187,6 +205,7 @@ chats.get('/api/chats/:id', async (c) => {
         friendId: item.friend_id,
         friendName: friend?.display_name || '名前なし',
         friendPictureUrl: friend?.picture_url || null,
+        isFollowing: friend?.is_following === null ? true : !!friend?.is_following,
         operatorId: item.operator_id,
         status: item.status,
         notes: item.notes,
@@ -264,8 +283,17 @@ chats.post('/api/chats/:id/loading', async (c) => {
       .first<{ id: string; line_user_id: string }>();
     if (!friend) return c.json({ success: false, error: 'Friend not found' }, 404);
 
+    // アカウント別の channel_access_token を解決 (マルチアカウント対応)
+    const targetAccountId = chat.line_account_id ?? (friend as unknown as { line_account_id?: string | null }).line_account_id;
+    let accessToken = c.env.LINE_CHANNEL_ACCESS_TOKEN;
+    if (targetAccountId) {
+      const { getLineAccountById } = await import('@line-crm/db');
+      const account = await getLineAccountById(c.env.DB, targetAccountId);
+      if (account?.channel_access_token) accessToken = account.channel_access_token;
+    }
+
     await startLoadingAnimation(
-      c.env.LINE_CHANNEL_ACCESS_TOKEN,
+      accessToken,
       friend.line_user_id,
       loadingSeconds,
     );
@@ -289,14 +317,26 @@ chats.post('/api/chats/:id/send', async (c) => {
     if (!body.content) return c.json({ success: false, error: 'content is required' }, 400);
 
     const friend = await c.env.DB
-      .prepare(`SELECT * FROM friends WHERE id = ?`)
+      .prepare(`SELECT id, line_user_id, line_account_id FROM friends WHERE id = ?`)
       .bind(chat.friend_id)
-      .first<{ id: string; line_user_id: string }>();
+      .first<{ id: string; line_user_id: string; line_account_id: string | null }>();
     if (!friend) return c.json({ success: false, error: 'Friend not found' }, 404);
+
+    // アカウント別の channel_access_token を解決 (マルチアカウント対応)
+    // 優先度: chat.line_account_id > friend.line_account_id > env.LINE_CHANNEL_ACCESS_TOKEN
+    const targetAccountId = chat.line_account_id ?? friend.line_account_id;
+    let accessToken = c.env.LINE_CHANNEL_ACCESS_TOKEN;
+    if (targetAccountId) {
+      const { getLineAccountById } = await import('@line-crm/db');
+      const account = await getLineAccountById(c.env.DB, targetAccountId);
+      if (account?.channel_access_token) {
+        accessToken = account.channel_access_token;
+      }
+    }
 
     // LINE APIでメッセージ送信
     const { LineClient } = await import('@line-crm/line-sdk');
-    const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
+    const lineClient = new LineClient(accessToken);
     const messageType = body.messageType ?? 'text';
 
     if (messageType === 'text') {
@@ -306,11 +346,11 @@ chats.post('/api/chats/:id/send', async (c) => {
       await lineClient.pushFlexMessage(friend.line_user_id, extractFlexAltText(contents), contents);
     }
 
-    // メッセージログに記録
+    // メッセージログに記録（chat.line_account_id でアカウント分離）
     const logId = crypto.randomUUID();
     await c.env.DB
-      .prepare(`INSERT INTO messages_log (id, friend_id, direction, message_type, content, created_at) VALUES (?, ?, 'outgoing', ?, ?, ?)`)
-      .bind(logId, friend.id, messageType, body.content, jstNow())
+      .prepare(`INSERT INTO messages_log (id, friend_id, direction, message_type, content, line_account_id, created_at) VALUES (?, ?, 'outgoing', ?, ?, ?, ?)`)
+      .bind(logId, friend.id, messageType, body.content, chat.line_account_id ?? null, jstNow())
       .run();
 
     // チャットの最終メッセージ日時を更新

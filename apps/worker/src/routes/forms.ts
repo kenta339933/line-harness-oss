@@ -51,8 +51,17 @@ function serializeSubmission(row: DbFormSubmission & { friend_name?: string | nu
 // GET /api/forms — list all forms
 forms.get('/api/forms', async (c) => {
   try {
-    const items = await getForms(c.env.DB);
-    return c.json({ success: true, data: items.map(serializeForm) });
+    const lineAccountId = c.req.query('lineAccountId') ?? undefined;
+    let sql = 'SELECT * FROM forms';
+    const bindings: unknown[] = [];
+    if (lineAccountId) {
+      sql += ' WHERE (line_account_id = ? OR line_account_id IS NULL)';
+      bindings.push(lineAccountId);
+    }
+    sql += ' ORDER BY created_at DESC';
+    const stmt = bindings.length ? c.env.DB.prepare(sql).bind(...bindings) : c.env.DB.prepare(sql);
+    const result = await stmt.all<DbForm>();
+    return c.json({ success: true, data: result.results.map(serializeForm) });
   } catch (err) {
     console.error('GET /api/forms error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);

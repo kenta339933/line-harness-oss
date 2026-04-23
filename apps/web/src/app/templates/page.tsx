@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { api } from '@/lib/api'
 import Header from '@/components/layout/header'
 import CcPromptButton from '@/components/cc-prompt-button'
+import { useAccount } from '@/contexts/account-context'
 
 interface Template {
   id: string
@@ -58,6 +59,7 @@ const ccPrompts = [
 ]
 
 export default function TemplatesPage() {
+  const { selectedAccountId } = useAccount()
   const [templates, setTemplates] = useState<Template[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -77,7 +79,8 @@ export default function TemplatesPage() {
     setError('')
     try {
       const res = await api.templates.list(
-        selectedCategory !== 'all' ? selectedCategory : undefined
+        selectedCategory !== 'all' ? selectedCategory : undefined,
+        { accountId: selectedAccountId || undefined },
       )
       if (res.success) {
         setTemplates(res.data)
@@ -89,7 +92,7 @@ export default function TemplatesPage() {
     } finally {
       setLoading(false)
     }
-  }, [selectedCategory])
+  }, [selectedCategory, selectedAccountId])
 
   useEffect(() => {
     load()
@@ -120,6 +123,7 @@ export default function TemplatesPage() {
         category: form.category,
         messageType: form.messageType,
         messageContent: form.messageContent,
+        lineAccountId: selectedAccountId || undefined,
       })
       if (res.success) {
         setShowCreate(false)

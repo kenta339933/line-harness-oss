@@ -13,10 +13,22 @@ const templates = new Hono<Env>();
 templates.get('/api/templates', async (c) => {
   try {
     const category = c.req.query('category') ?? undefined;
-    const items = await getTemplates(c.env.DB, category);
+    const lineAccountId = c.req.query('lineAccountId') ?? undefined;
+    let sql = 'SELECT * FROM templates';
+    const conditions: string[] = [];
+    const bindings: unknown[] = [];
+    if (category) { conditions.push('category = ?'); bindings.push(category); }
+    if (lineAccountId) {
+      conditions.push('(line_account_id = ? OR line_account_id IS NULL)');
+      bindings.push(lineAccountId);
+    }
+    if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ');
+    sql += ' ORDER BY created_at DESC';
+    const stmt = bindings.length ? c.env.DB.prepare(sql).bind(...bindings) : c.env.DB.prepare(sql);
+    const result = await stmt.all<{ id: string; name: string; category: string; message_type: string; message_content: string; created_at: string; updated_at: string }>();
     return c.json({
       success: true,
-      data: items.map((t) => ({
+      data: result.results.map((t) => ({
         id: t.id,
         name: t.name,
         category: t.category,

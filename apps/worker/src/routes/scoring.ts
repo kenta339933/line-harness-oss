@@ -17,10 +17,19 @@ const scoring = new Hono<Env>();
 
 scoring.get('/api/scoring-rules', async (c) => {
   try {
-    const items = await getScoringRules(c.env.DB);
+    const lineAccountId = c.req.query('lineAccountId') ?? undefined;
+    let sql = 'SELECT * FROM scoring_rules';
+    const bindings: unknown[] = [];
+    if (lineAccountId) {
+      sql += ' WHERE (line_account_id = ? OR line_account_id IS NULL)';
+      bindings.push(lineAccountId);
+    }
+    sql += ' ORDER BY created_at DESC';
+    const stmt = bindings.length ? c.env.DB.prepare(sql).bind(...bindings) : c.env.DB.prepare(sql);
+    const result = await stmt.all<{ id: string; name: string; event_type: string; score_value: number; is_active: number; created_at: string; updated_at: string }>();
     return c.json({
       success: true,
-      data: items.map((r) => ({
+      data: result.results.map((r) => ({
         id: r.id,
         name: r.name,
         eventType: r.event_type,

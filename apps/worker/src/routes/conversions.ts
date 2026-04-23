@@ -17,10 +17,19 @@ const conversions = new Hono<Env>();
 // GET /api/conversions/points - list all
 conversions.get('/api/conversions/points', async (c) => {
   try {
-    const items = await getConversionPoints(c.env.DB);
+    const lineAccountId = c.req.query('lineAccountId') ?? undefined;
+    let sql = 'SELECT * FROM conversion_points';
+    const bindings: unknown[] = [];
+    if (lineAccountId) {
+      sql += ' WHERE (line_account_id = ? OR line_account_id IS NULL)';
+      bindings.push(lineAccountId);
+    }
+    sql += ' ORDER BY created_at DESC';
+    const stmt = bindings.length ? c.env.DB.prepare(sql).bind(...bindings) : c.env.DB.prepare(sql);
+    const result = await stmt.all<{ id: string; name: string; event_type: string; value: number | null; created_at: string }>();
     return c.json({
       success: true,
-      data: items.map((p) => ({
+      data: result.results.map((p) => ({
         id: p.id,
         name: p.name,
         eventType: p.event_type,
@@ -124,19 +133,36 @@ conversions.post('/api/conversions/track', async (c) => {
 // GET /api/conversions/events - list events with filters
 conversions.get('/api/conversions/events', async (c) => {
   try {
-    const events = await getConversionEvents(c.env.DB, {
-      conversionPointId: c.req.query('conversionPointId'),
-      friendId: c.req.query('friendId'),
-      affiliateCode: c.req.query('affiliateCode'),
-      startDate: c.req.query('startDate'),
-      endDate: c.req.query('endDate'),
-      limit: Number(c.req.query('limit') ?? '100'),
-      offset: Number(c.req.query('offset') ?? '0'),
-    });
+    const lineAccountId = c.req.query('lineAccountId') ?? undefined;
+    const conversionPointId = c.req.query('conversionPointId');
+    const friendId = c.req.query('friendId');
+    const affiliateCode = c.req.query('affiliateCode');
+    const startDate = c.req.query('startDate');
+    const endDate = c.req.query('endDate');
+    const limit = Number(c.req.query('limit') ?? '100');
+    const offset = Number(c.req.query('offset') ?? '0');
+
+    // アカウント別フィルタを追加した直接クエリ
+    let sql = 'SELECT * FROM conversion_events';
+    const conditions: string[] = [];
+    const bindings: unknown[] = [];
+    if (lineAccountId) {
+      conditions.push('(line_account_id = ? OR line_account_id IS NULL)');
+      bindings.push(lineAccountId);
+    }
+    if (conversionPointId) { conditions.push('conversion_point_id = ?'); bindings.push(conversionPointId); }
+    if (friendId) { conditions.push('friend_id = ?'); bindings.push(friendId); }
+    if (affiliateCode) { conditions.push('affiliate_code = ?'); bindings.push(affiliateCode); }
+    if (startDate) { conditions.push('created_at >= ?'); bindings.push(startDate); }
+    if (endDate) { conditions.push('created_at <= ?'); bindings.push(endDate); }
+    if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ');
+    sql += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
+    bindings.push(limit, offset);
+    const result = await c.env.DB.prepare(sql).bind(...bindings).all<{ id: string; conversion_point_id: string; friend_id: string; user_id: string | null; affiliate_code: string | null; metadata: string | null; created_at: string }>();
 
     return c.json({
       success: true,
-      data: events.map((e) => ({
+      data: result.results.map((e) => ({
         id: e.id,
         conversionPointId: e.conversion_point_id,
         friendId: e.friend_id,

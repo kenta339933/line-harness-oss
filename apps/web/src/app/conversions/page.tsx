@@ -1,10 +1,11 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { api } from '@/lib/api'
 import type { ConversionPoint } from '@line-crm/shared'
 import Header from '@/components/layout/header'
 import CcPromptButton from '@/components/cc-prompt-button'
+import { useAccount } from '@/contexts/account-context'
 
 interface ConversionReportItem {
   conversionPointId: string
@@ -34,26 +35,27 @@ const ccPrompts = [
 ]
 
 export default function ConversionsPage() {
+  const { selectedAccountId } = useAccount()
   const [points, setPoints] = useState<ConversionPoint[]>([])
   const [report, setReport] = useState<ConversionReportItem[]>([])
   const [loading, setLoading] = useState(true)
   const [showCreate, setShowCreate] = useState(false)
   const [form, setForm] = useState({ name: '', eventType: '', value: '' })
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true)
     try {
       const [pointsRes, reportRes] = await Promise.allSettled([
-        api.conversions.points(),
+        api.conversions.points({ accountId: selectedAccountId || undefined }),
         api.conversions.report(),
       ])
       if (pointsRes.status === 'fulfilled' && pointsRes.value.success) setPoints(pointsRes.value.data)
       if (reportRes.status === 'fulfilled' && reportRes.value.success) setReport(reportRes.value.data)
     } catch {}
     setLoading(false)
-  }
+  }, [selectedAccountId])
 
-  useEffect(() => { load() }, [])
+  useEffect(() => { load() }, [load])
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -63,6 +65,7 @@ export default function ConversionsPage() {
         name: form.name,
         eventType: form.eventType,
         value: form.value ? Number(form.value) : null,
+        lineAccountId: selectedAccountId || undefined,
       })
       setForm({ name: '', eventType: '', value: '' })
       setShowCreate(false)

@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react'
 import Header from '@/components/layout/header'
 import { api } from '@/lib/api'
 import CcPromptButton from '@/components/cc-prompt-button'
+import { useAccount } from '@/contexts/account-context'
 
 interface IncomingWebhook {
   id: string
@@ -48,6 +49,7 @@ const ccPrompts = [
 ]
 
 export default function WebhooksPage() {
+  const { selectedAccountId } = useAccount()
   const [tab, setTab] = useState<Tab>('incoming')
   const [incoming, setIncoming] = useState<IncomingWebhook[]>([])
   const [outgoing, setOutgoing] = useState<OutgoingWebhook[]>([])
@@ -63,8 +65,8 @@ export default function WebhooksPage() {
     setError('')
     try {
       const [inRes, outRes] = await Promise.all([
-        api.webhooks.incoming.list(),
-        api.webhooks.outgoing.list(),
+        api.webhooks.incoming.list({ accountId: selectedAccountId || undefined }),
+        api.webhooks.outgoing.list({ accountId: selectedAccountId || undefined }),
       ])
       if (inRes.success) setIncoming(inRes.data)
       else setError(inRes.error)
@@ -75,7 +77,7 @@ export default function WebhooksPage() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [selectedAccountId])
 
   useEffect(() => { load() }, [load])
 
@@ -124,6 +126,7 @@ export default function WebhooksPage() {
       await api.webhooks.incoming.create({
         name: inForm.name,
         sourceType: inForm.sourceType || undefined,
+        lineAccountId: selectedAccountId || undefined,
       })
       setInForm({ name: '', sourceType: '' })
       setShowCreate(false)
@@ -146,6 +149,7 @@ export default function WebhooksPage() {
         url: outForm.url,
         eventTypes,
         secret: outForm.secret || undefined,
+        lineAccountId: selectedAccountId || undefined,
       })
       setOutForm({ name: '', url: '', eventTypes: '', secret: '' })
       setShowCreate(false)

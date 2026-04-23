@@ -31,17 +31,23 @@ export default function FormSubmissionsPage() {
   const [subLoading, setSubLoading] = useState(false)
   const [page, setPage] = useState(1)
   const [fieldLabels, setFieldLabels] = useState<Record<string, string>>({})
+  const [detailSubmission, setDetailSubmission] = useState<Submission | null>(null)
 
   const loadForms = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await fetchApi<{ success: boolean; data: Form[] }>('/api/forms')
+      const accountQuery = selectedAccountId ? `?lineAccountId=${selectedAccountId}` : ''
+      const res = await fetchApi<{ success: boolean; data: Form[] }>(`/api/forms${accountQuery}`)
       if (res.success) setForms(res.data)
     } catch { /* silent */ }
     setLoading(false)
-  }, [])
+  }, [selectedAccountId])
 
-  useEffect(() => { loadForms() }, [loadForms])
+  useEffect(() => {
+    loadForms()
+    setSelectedFormId(null)
+    setSubmissions([])
+  }, [loadForms])
 
   const loadSubmissions = useCallback(async (formId: string) => {
     setSubLoading(true)
@@ -150,7 +156,12 @@ export default function FormSubmissionsPage() {
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {paged.map((sub) => (
-                    <tr key={sub.id} className="hover:bg-gray-50">
+                    <tr
+                      key={sub.id}
+                      className="hover:bg-green-50 cursor-pointer transition-colors"
+                      onClick={() => setDetailSubmission(sub)}
+                      title="クリックで全文表示"
+                    >
                       <td className="px-4 py-3 text-sm font-medium text-gray-900 whitespace-nowrap">{sub.friendName}</td>
                       <td className="px-4 py-3 text-xs text-gray-400 whitespace-nowrap">
                         {new Date(sub.createdAt).toLocaleString('ja-JP', {
@@ -158,7 +169,7 @@ export default function FormSubmissionsPage() {
                         })}
                       </td>
                       {fieldKeys.map((key) => (
-                        <td key={key} className="px-4 py-3 text-sm text-gray-700 max-w-[200px] truncate">
+                        <td key={key} className="px-4 py-3 text-sm text-gray-700 max-w-[240px] truncate">
                           {Array.isArray(sub.data[key])
                             ? (sub.data[key] as string[]).join(', ')
                             : (sub.data[key] !== null && sub.data[key] !== undefined && sub.data[key] !== '') ? String(sub.data[key]) : '-'}
@@ -197,6 +208,66 @@ export default function FormSubmissionsPage() {
             )}
           </>
         )
+      )}
+
+      {/* 詳細モーダル - 回答全文表示 */}
+      {detailSubmission && (
+        <div
+          className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
+          onClick={() => setDetailSubmission(null)}
+        >
+          <div
+            className="bg-white rounded-lg max-w-3xl w-full max-h-[85vh] overflow-y-auto shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-bold text-gray-900">{detailSubmission.friendName} さんの回答</h2>
+                <p className="text-xs text-gray-400 mt-1">
+                  {new Date(detailSubmission.createdAt).toLocaleString('ja-JP', {
+                    year: 'numeric', month: '2-digit', day: '2-digit',
+                    hour: '2-digit', minute: '2-digit', second: '2-digit',
+                  })}
+                </p>
+              </div>
+              <button
+                onClick={() => setDetailSubmission(null)}
+                className="text-gray-400 hover:text-gray-600 text-2xl leading-none w-8 h-8 flex items-center justify-center rounded hover:bg-gray-100"
+                aria-label="閉じる"
+              >
+                ×
+              </button>
+            </div>
+            <div className="px-6 py-5 space-y-4">
+              {fieldKeys.map((key) => {
+                const val = detailSubmission.data[key]
+                const displayVal = Array.isArray(val)
+                  ? (val as unknown[]).map(v => String(v)).join(', ')
+                  : (val !== null && val !== undefined && val !== '')
+                    ? String(val)
+                    : ''
+                return (
+                  <div key={key} className="border-b border-gray-100 pb-3 last:border-0">
+                    <dt className="text-xs font-semibold text-gray-500 uppercase mb-1">
+                      {fieldLabels[key] || key}
+                    </dt>
+                    <dd className="text-sm text-gray-900 whitespace-pre-wrap break-words">
+                      {displayVal || <span className="text-gray-300">未入力</span>}
+                    </dd>
+                  </div>
+                )
+              })}
+            </div>
+            <div className="sticky bottom-0 bg-gray-50 border-t border-gray-200 px-6 py-3 flex justify-end">
+              <button
+                onClick={() => setDetailSubmission(null)}
+                className="px-4 py-2 text-sm font-medium text-gray-600 bg-white border border-gray-200 rounded-lg hover:bg-gray-50"
+              >
+                閉じる
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )
