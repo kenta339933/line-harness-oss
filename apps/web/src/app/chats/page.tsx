@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, Fragment } from 'react'
 import { api, fetchApi } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
 import Header from '@/components/layout/header'
@@ -12,6 +12,7 @@ interface Chat {
   friendId: string
   friendName: string
   friendPictureUrl: string | null
+  isFollowing?: boolean
   operatorId: string | null
   status: 'unread' | 'in_progress' | 'resolved'
   notes: string | null
@@ -62,6 +63,43 @@ function formatDatetime(iso: string | null): string {
     day: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
+  })
+}
+
+function isSameCalendarDay(a: string, b: string): boolean {
+  const da = new Date(a)
+  const db = new Date(b)
+  return (
+    da.getFullYear() === db.getFullYear() &&
+    da.getMonth() === db.getMonth() &&
+    da.getDate() === db.getDate()
+  )
+}
+
+function formatMessageTime(iso: string): string {
+  const d = new Date(iso)
+  const mm = d.getMonth() + 1
+  const dd = d.getDate()
+  const hhmm = d.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })
+  return `${mm}/${dd} ${hhmm}`
+}
+
+function formatDateSeparator(iso: string): string {
+  const d = new Date(iso)
+  const now = new Date()
+  const isSame = (x: Date, y: Date) =>
+    x.getFullYear() === y.getFullYear() &&
+    x.getMonth() === y.getMonth() &&
+    x.getDate() === y.getDate()
+  if (isSame(d, now)) return '今日'
+  const yesterday = new Date(now)
+  yesterday.setDate(now.getDate() - 1)
+  if (isSame(d, yesterday)) return '昨日'
+  return d.toLocaleDateString('ja-JP', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    weekday: 'short',
   })
 }
 
@@ -146,8 +184,20 @@ function DirectMessagePanel({ friendId, friend, lineAccountId, onBack, onSent }:
     setSending(false)
   }
 
-  function renderContent(msg: MessageLog) {
+  function renderContent(msg: MessageLog): React.ReactNode {
     if (msg.messageType === 'text') return msg.content
+    if (msg.messageType === 'image') {
+      try {
+        const parsed = JSON.parse(msg.content) as { originalContentUrl?: string; previewImageUrl?: string }
+        const url = parsed.previewImageUrl || parsed.originalContentUrl
+        if (!url) return '[画像なし]'
+        return (
+          <a href={parsed.originalContentUrl || url} target="_blank" rel="noopener noreferrer" className="block">
+            <img src={url} alt="" className="max-w-full max-h-64 rounded-lg" />
+          </a>
+        )
+      } catch { return '[画像]' }
+    }
     if (msg.messageType === 'flex') {
       try {
         const parsed = JSON.parse(msg.content)
@@ -208,7 +258,7 @@ function DirectMessagePanel({ friendId, friend, lineAccountId, onBack, onSent }:
               }`}>
                 <p className="text-sm whitespace-pre-wrap break-words">{renderContent(msg)}</p>
                 <p className={`text-xs mt-1 ${msg.direction === 'outgoing' ? 'text-green-200' : 'text-gray-400'}`}>
-                  {new Date(msg.createdAt).toLocaleString('ja-JP', { hour: '2-digit', minute: '2-digit' })}
+                  {formatMessageTime(msg.createdAt)}
                 </p>
               </div>
             </div>
@@ -258,6 +308,40 @@ export default function ChatsPage() {
   const [loadingSeconds, setLoadingSeconds] = useState(5)
   const lastLoadingTriggerAtRef = useRef<Record<string, number>>({})
   const [isMessageInputFocused, setIsMessageInputFocused] = useState(false)
+  const [sendingImage, setSendingImage] = useState(false)
+  const imageInputRef = useRef<HTMLInputElement>(null)
+  const [showOptions, setShowOptions] = useState(false)
+  const [showStatusMenu, setShowStatusMenu] = useState(false)
+
+  const handleSendImage = async (file: File) => {
+    if (!selectedChatId || sendingImage) return
+    setSendingImage(true)
+    try {
+      const reader = new FileReader()
+      const base64: string = await new Promise((resolve, reject) => {
+        reader.onload = () => resolve(reader.result as string)
+        reader.onerror = () => reject(reader.error)
+        reader.readAsDataURL(file)
+      })
+      const upload = await fetchApi<{ success: boolean; data: { url: string } }>(`/api/images`, {
+        method: 'POST',
+        body: JSON.stringify({ data: base64, mimeType: file.type, filename: file.name }),
+      })
+      if (!upload.success) throw new Error('upload failed')
+      const url = upload.data.url
+      await api.chats.send(selectedChatId, {
+        messageType: 'image',
+        content: JSON.stringify({ originalContentUrl: url, previewImageUrl: url }),
+      })
+      loadChatDetail(selectedChatId)
+      loadChats()
+    } catch {
+      setError('画像の送信に失敗しました。')
+    } finally {
+      setSendingImage(false)
+      if (imageInputRef.current) imageInputRef.current.value = ''
+    }
+  }
 
   useEffect(() => {
     try {
@@ -408,7 +492,10 @@ export default function ChatsPage() {
 
   return (
     <div>
-      <Header title="オペレーターチャット" />
+      {/* チャット選択中はモバイルでヘッダー非表示で画面を稼ぐ */}
+      <div className={selectedChatId || selectedFriendId ? 'hidden lg:block' : ''}>
+        <Header title="オペレーターチャット" />
+      </div>
 
       {/* Error */}
       {error && (
@@ -417,7 +504,7 @@ export default function ChatsPage() {
         </div>
       )}
 
-      <div className="flex gap-4 h-[calc(100vh-120px)] lg:h-[calc(100vh-180px)]">
+      <div className="flex gap-4 h-[calc(100dvh-132px-env(safe-area-inset-bottom))] lg:h-[calc(100vh-180px)]">
         {/* Left Panel: Chat List */}
         <div className={`w-full lg:w-96 lg:flex-shrink-0 bg-white rounded-lg shadow-sm border border-gray-200 flex-col overflow-hidden ${selectedChatId ? 'hidden lg:flex' : 'flex'}`}>
           {/* Status Filter Tabs */}
@@ -468,15 +555,34 @@ export default function ChatsPage() {
                       }`}
                     >
                       <div className="flex items-center gap-3">
-                        {chat.friendPictureUrl ? (
-                          <img src={chat.friendPictureUrl} alt="" className="w-10 h-10 rounded-full flex-shrink-0" />
-                        ) : (
-                          <div className="w-10 h-10 rounded-full bg-gray-200 flex items-center justify-center flex-shrink-0">
-                            <span className="text-gray-500 text-sm">{chat.friendName.charAt(0)}</span>
-                          </div>
-                        )}
+                        <div className="relative flex-shrink-0">
+                          {chat.friendPictureUrl ? (
+                            <img src={chat.friendPictureUrl} alt="" className={`w-10 h-10 rounded-full ${chat.isFollowing === false ? 'opacity-60 grayscale' : ''}`} />
+                          ) : (
+                            <div className={`w-10 h-10 rounded-full bg-gray-200 flex items-center justify-center ${chat.isFollowing === false ? 'opacity-60' : ''}`}>
+                              <span className="text-gray-500 text-sm">{chat.friendName.charAt(0)}</span>
+                            </div>
+                          )}
+                          {chat.isFollowing === false && (
+                            <span
+                              className="absolute -bottom-0.5 -right-0.5 w-4 h-4 bg-red-500 border-2 border-white rounded-full flex items-center justify-center"
+                              title="ブロック中"
+                            >
+                              <svg className="w-2.5 h-2.5 text-white" fill="currentColor" viewBox="0 0 20 20">
+                                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                              </svg>
+                            </span>
+                          )}
+                        </div>
                         <div className="min-w-0 flex-1">
-                          <p className="text-sm font-medium text-gray-900 truncate">{chat.friendName}</p>
+                          <div className="flex items-center gap-1.5">
+                            <p className={`text-sm font-medium truncate ${chat.isFollowing === false ? 'text-gray-500' : 'text-gray-900'}`}>{chat.friendName}</p>
+                            {chat.isFollowing === false && (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-red-100 text-red-700 border border-red-200 flex-shrink-0">
+                                ブロック中
+                              </span>
+                            )}
+                          </div>
                           <p className="text-xs text-gray-400 mt-0.5">{formatDatetime(chat.lastMessageAt)}</p>
                         </div>
                         <span className={`ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium flex-shrink-0 ${statusInfo.className}`}>
@@ -549,11 +655,12 @@ export default function ChatsPage() {
                     </div>
                   </div>
                 </div>
-                <div className="flex flex-wrap items-center gap-2">
+                {/* デスクトップ: 3ボタン横並び / モバイル: ドロップダウン */}
+                <div className="hidden lg:flex flex-wrap items-center gap-2">
                   {chatDetail.status !== 'unread' && (
                     <button
                       onClick={() => handleStatusUpdate('unread')}
-                      className="px-3 py-1 min-h-[44px] lg:min-h-0 text-xs font-medium text-red-600 bg-red-50 hover:bg-red-100 rounded-md transition-colors"
+                      className="px-3 py-1 text-xs font-medium text-red-600 bg-red-50 hover:bg-red-100 rounded-md transition-colors"
                     >
                       未読に戻す
                     </button>
@@ -561,7 +668,7 @@ export default function ChatsPage() {
                   {chatDetail.status !== 'in_progress' && (
                     <button
                       onClick={() => handleStatusUpdate('in_progress')}
-                      className="px-3 py-1 min-h-[44px] lg:min-h-0 text-xs font-medium text-yellow-700 bg-yellow-50 hover:bg-yellow-100 rounded-md transition-colors"
+                      className="px-3 py-1 text-xs font-medium text-yellow-700 bg-yellow-50 hover:bg-yellow-100 rounded-md transition-colors"
                     >
                       対応中にする
                     </button>
@@ -569,10 +676,52 @@ export default function ChatsPage() {
                   {chatDetail.status !== 'resolved' && (
                     <button
                       onClick={() => handleStatusUpdate('resolved')}
-                      className="px-3 py-1 min-h-[44px] lg:min-h-0 text-xs font-medium text-green-700 bg-green-50 hover:bg-green-100 rounded-md transition-colors"
+                      className="px-3 py-1 text-xs font-medium text-green-700 bg-green-50 hover:bg-green-100 rounded-md transition-colors"
                     >
                       解決済にする
                     </button>
+                  )}
+                </div>
+                <div className="lg:hidden relative flex-shrink-0">
+                  <button
+                    onClick={() => setShowStatusMenu((v) => !v)}
+                    className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center text-gray-500 hover:text-gray-700 rounded-md hover:bg-gray-100"
+                    aria-label="ステータス変更"
+                  >
+                    <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                      <path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z" />
+                    </svg>
+                  </button>
+                  {showStatusMenu && (
+                    <>
+                      <div className="fixed inset-0 z-30" onClick={() => setShowStatusMenu(false)} />
+                      <div className="absolute right-0 top-full mt-1 z-40 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden min-w-[160px]">
+                        {chatDetail.status !== 'unread' && (
+                          <button
+                            onClick={() => { handleStatusUpdate('unread'); setShowStatusMenu(false) }}
+                            className="w-full text-left px-4 py-3 text-sm text-red-600 hover:bg-red-50"
+                          >
+                            未読に戻す
+                          </button>
+                        )}
+                        {chatDetail.status !== 'in_progress' && (
+                          <button
+                            onClick={() => { handleStatusUpdate('in_progress'); setShowStatusMenu(false) }}
+                            className="w-full text-left px-4 py-3 text-sm text-yellow-700 hover:bg-yellow-50 border-t border-gray-100"
+                          >
+                            対応中にする
+                          </button>
+                        )}
+                        {chatDetail.status !== 'resolved' && (
+                          <button
+                            onClick={() => { handleStatusUpdate('resolved'); setShowStatusMenu(false) }}
+                            className="w-full text-left px-4 py-3 text-sm text-green-700 hover:bg-green-50 border-t border-gray-100"
+                          >
+                            解決済にする
+                          </button>
+                        )}
+                      </div>
+                    </>
                   )}
                 </div>
               </div>
@@ -584,8 +733,11 @@ export default function ChatsPage() {
                     <p className="text-white/60 text-sm">メッセージはまだありません。</p>
                   </div>
                 ) : (
-                  (chatDetail.messages ?? []).map((msg) => {
+                  (chatDetail.messages ?? []).map((msg, idx, arr) => {
                     const isOutgoing = msg.direction === 'outgoing'
+                    const prevMsg = idx > 0 ? arr[idx - 1] : null
+                    const showDateHeader =
+                      !prevMsg || !isSameCalendarDay(prevMsg.createdAt, msg.createdAt)
 
                     // メッセージ表示の分岐
                     let bubbleContent: React.ReactNode
@@ -609,8 +761,15 @@ export default function ChatsPage() {
                     }
 
                     return (
+                      <Fragment key={msg.id}>
+                        {showDateHeader && (
+                          <div className="flex justify-center py-2">
+                            <span className="text-xs text-white bg-black/25 px-3 py-1 rounded-full">
+                              {formatDateSeparator(msg.createdAt)}
+                            </span>
+                          </div>
+                        )}
                       <div
-                        key={msg.id}
                         className={`flex items-end gap-2 ${isOutgoing ? 'justify-end' : 'justify-start'}`}
                       >
                         {/* 相手のアイコン（incoming のみ） */}
@@ -636,59 +795,81 @@ export default function ChatsPage() {
                           </div>
                           {/* 時刻 */}
                           <span className="text-xs text-white/50 mt-0.5 px-1">
-                            {new Date(msg.createdAt).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}
+                            {formatMessageTime(msg.createdAt)}
                           </span>
                         </div>
                       </div>
+                      </Fragment>
                     )
                   })
                 )}
               </div>
 
-              {/* Notes */}
-              <div className="px-4 py-2 border-t border-gray-200 bg-gray-50">
-                <div className="flex items-center gap-2">
-                  <input
-                    type="text"
-                    value={notes}
-                    onChange={(e) => setNotes(e.target.value)}
-                    placeholder="メモを入力..."
-                    className="flex-1 text-xs border border-gray-300 rounded-md px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-green-500"
-                  />
-                  <button
-                    onClick={handleSaveNotes}
-                    disabled={savingNotes}
-                    className="px-2 py-1 text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-md transition-colors disabled:opacity-50"
-                  >
-                    {savingNotes ? '保存中...' : 'メモ保存'}
-                  </button>
+              {/* オプション展開（メモ・入力中ローディング設定） */}
+              {showOptions && (
+                <div className="border-t border-gray-200 bg-gray-50 px-4 py-3 space-y-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-600 mb-1">メモ</label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={notes}
+                        onChange={(e) => setNotes(e.target.value)}
+                        placeholder="メモを入力..."
+                        className="flex-1 text-sm border border-gray-300 rounded-md px-3 py-2 bg-white focus:outline-none focus:ring-1 focus:ring-green-500"
+                      />
+                      <button
+                        onClick={handleSaveNotes}
+                        disabled={savingNotes}
+                        className="px-3 py-2 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors disabled:opacity-50"
+                      >
+                        {savingNotes ? '保存中' : '保存'}
+                      </button>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-600 mb-1">入力中ローディング</label>
+                    <div className="flex items-center gap-3 text-xs text-gray-600">
+                      <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={showLoadingIndicator}
+                          onChange={(e) => setShowLoadingIndicator(e.target.checked)}
+                          className="h-4 w-4 rounded border-gray-300 text-green-600 focus:ring-green-500"
+                        />
+                        表示する
+                      </label>
+                      <select
+                        value={loadingSeconds}
+                        onChange={(e) => setLoadingSeconds(Number.parseInt(e.target.value, 10))}
+                        disabled={!showLoadingIndicator}
+                        className="border border-gray-300 rounded-md px-2 py-1 bg-white disabled:bg-gray-100 disabled:text-gray-400"
+                      >
+                        {[5, 10, 15, 20, 30, 45, 60].map((sec) => (
+                          <option key={sec} value={sec}>{sec}秒</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
                 </div>
-              </div>
+              )}
 
               {/* Send Message Form */}
-              <div className="px-4 py-3 border-t border-gray-200">
-                <div className="mb-2 flex items-center gap-3 text-xs text-gray-600">
-                  <label className="inline-flex items-center gap-2 cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      checked={showLoadingIndicator}
-                      onChange={(e) => setShowLoadingIndicator(e.target.checked)}
-                      className="h-4 w-4 rounded border-gray-300 text-green-600 focus:ring-green-500"
-                    />
-                    入力中ローディングを表示
-                  </label>
-                  <select
-                    value={loadingSeconds}
-                    onChange={(e) => setLoadingSeconds(Number.parseInt(e.target.value, 10))}
-                    disabled={!showLoadingIndicator}
-                    className="border border-gray-300 rounded-md px-2 py-1 bg-white disabled:bg-gray-100 disabled:text-gray-400"
-                  >
-                    {[5, 10, 15, 20, 30, 45, 60].map((sec) => (
-                      <option key={sec} value={sec}>{sec}秒</option>
-                    ))}
-                  </select>
-                </div>
+              <div className="px-3 py-2 border-t border-gray-200">
                 <div className="flex items-end gap-2">
+                  <button
+                    onClick={() => setShowOptions((v) => !v)}
+                    title="オプション"
+                    className={`px-2 py-2 min-h-[44px] flex items-center justify-center rounded-lg flex-shrink-0 transition-colors ${
+                      showOptions ? 'bg-green-50 text-green-700' : 'text-gray-500 hover:bg-gray-100'
+                    }`}
+                    aria-label="オプション"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                    </svg>
+                  </button>
                   <textarea
                     value={messageContent}
                     onChange={(e) => {
@@ -706,17 +887,42 @@ export default function ChatsPage() {
                     }}
                     onBlur={() => setIsMessageInputFocused(false)}
                     onKeyDown={handleKeyDown}
-                    placeholder="メッセージを入力... (Cmd/Ctrl+Enter で送信)"
-                    rows={6}
-                    className="flex-1 text-sm border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-green-500 resize-y min-h-[96px] max-h-[400px] overflow-y-auto leading-relaxed"
+                    placeholder="メッセージ"
+                    rows={1}
+                    className="flex-1 text-sm border border-gray-300 rounded-2xl px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-green-500 resize-y min-h-[44px] lg:min-h-[96px] max-h-[240px] leading-relaxed"
                   />
+                  <input
+                    ref={imageInputRef}
+                    type="file"
+                    accept="image/png,image/jpeg"
+                    className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0]
+                      if (file) void handleSendImage(file)
+                    }}
+                  />
+                  <button
+                    onClick={() => imageInputRef.current?.click()}
+                    disabled={sendingImage || !selectedChatId}
+                    title="画像を送信"
+                    className="px-2 py-2 min-w-[44px] min-h-[44px] flex items-center justify-center text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0"
+                    aria-label="画像を送信"
+                  >
+                    {sendingImage ? (
+                      <span className="text-xs">...</span>
+                    ) : (
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                      </svg>
+                    )}
+                  </button>
                   <button
                     onClick={handleSendMessage}
                     disabled={sending || !messageContent.trim()}
-                    className="px-4 py-2 text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0"
+                    className="px-4 py-2 min-h-[44px] text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0"
                     style={{ backgroundColor: '#06C755' }}
                   >
-                    {sending ? '送信中...' : '送信'}
+                    {sending ? '...' : '送信'}
                   </button>
                 </div>
               </div>

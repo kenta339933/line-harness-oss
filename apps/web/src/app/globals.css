@@ -1,1 +1,44 @@
 @import "tailwindcss";
+
+/* iOSのフォーカス時オートズーム抑止: input/textarea/selectは16px以上必須 */
+@media (max-width: 1023px) {
+  input:not([type='checkbox']):not([type='radio']):not([type='range']),
+  textarea,
+  select {
+    font-size: 16px;
+  }
+
+  /* モバイル: 全テーブル(.overflow-x-auto > table パターン)を自動カード化 */
+  .overflow-x-auto > table {
+    display: block;
+    min-width: 0 !important;
+    width: 100%;
+  }
+  .overflow-x-auto > table thead {
+    display: none;
+  }
+  .overflow-x-auto > table tbody {
+    display: block;
+  }
+  .overflow-x-auto > table tr {
+    display: block;
+    border-bottom: 1px solid #f3f4f6;
+    padding: 12px 16px;
+  }
+  .overflow-x-auto > table tr:last-child {
+    border-bottom: none;
+  }
+  .overflow-x-auto > table td {
+    display: block;
+    padding: 3px 0 !important;
+    text-align: left !important;
+    border: none !important;
+    white-space: normal !important;
+  }
+  /* 1セル目はヘッダー的扱いで強調 */
+  .overflow-x-auto > table td:first-child {
+    font-weight: 500;
+    margin-bottom: 4px;
+  }
+}
+

@@ -112,8 +112,8 @@ chats.get('/api/chats', async (c) => {
     const operatorId = c.req.query('operatorId') ?? undefined;
     const lineAccountId = c.req.query('lineAccountId') ?? undefined;
 
-    // JOIN friends to get display_name and picture_url
-    let sql = `SELECT c.*, f.display_name, f.picture_url, f.line_user_id
+    // JOIN friends to get display_name, picture_url, is_following (block status)
+    let sql = `SELECT c.*, f.display_name, f.picture_url, f.line_user_id, f.is_following
                FROM chats c
                LEFT JOIN friends f ON c.friend_id = f.id`;
     const conditions: string[] = [];
@@ -152,6 +152,7 @@ chats.get('/api/chats', async (c) => {
         friendId: ch.friend_id,
         friendName: ch.display_name || '名前なし',
         friendPictureUrl: ch.picture_url || null,
+        isFollowing: ch.is_following === null ? true : !!ch.is_following,
         operatorId: ch.operator_id,
         status: ch.status,
         notes: ch.notes,
@@ -344,6 +345,11 @@ chats.post('/api/chats/:id/send', async (c) => {
     } else if (messageType === 'flex') {
       const contents = JSON.parse(body.content);
       await lineClient.pushFlexMessage(friend.line_user_id, extractFlexAltText(contents), contents);
+    } else if (messageType === 'image') {
+      const parsed = JSON.parse(body.content) as { originalContentUrl: string; previewImageUrl: string };
+      await lineClient.pushMessage(friend.line_user_id, [
+        { type: 'image', originalContentUrl: parsed.originalContentUrl, previewImageUrl: parsed.previewImageUrl },
+      ]);
     }
 
     // メッセージログに記録（chat.line_account_id でアカウント分離）

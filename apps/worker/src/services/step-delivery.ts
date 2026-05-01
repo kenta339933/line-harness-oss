@@ -88,25 +88,15 @@ export async function resolveMetadata(
   return {};
 }
 
-/** Default delivery window: 9:00-23:00 JST. If outside, push to next 9:00 AM. */
-const DEFAULT_START_HOUR = 9;
-const DEFAULT_END_HOUR = 23;
-
-function enforceDeliveryWindow(date: Date, preferredHour?: number): Date {
-  // date is already shifted to JST epoch (+9h)
-  const hours = date.getUTCHours();
-  const startHour = preferredHour ?? DEFAULT_START_HOUR;
-  const endHour = DEFAULT_END_HOUR;
-
-  if (hours >= startHour && hours < endHour) return date;
-
-  // Outside window: push to next preferred start hour
-  const result = new Date(date);
-  if (hours >= endHour) {
-    result.setUTCDate(result.getUTCDate() + 1);
-  }
-  result.setUTCHours(startHour, 0, 0, 0);
-  return result;
+/**
+ * 配信ウィンドウ制約は撤廃（2026-04-25）。
+ * 以前は 9:00-23:00 JST 範囲外の配信を翌朝9時に丸めていたが、
+ * 「22時にLINE登録 → 翌朝配信」になるのが体験悪化の原因になるため廃止。
+ *
+ * preferredHour が指定されてもそれは尊重しない（互換のため引数だけ残す）。
+ */
+function enforceDeliveryWindow(date: Date, _preferredHour?: number): Date {
+  return date;
 }
 
 const MAX_SENDS_PER_CRON = 40; // CF Free plan: 50 subrequests limit (margin for other jobs)
@@ -116,9 +106,7 @@ export async function processStepDeliveries(
   lineClient: LineClient,
   workerUrl?: string,
 ): Promise<void> {
-  // Skip delivery outside 9:00-23:00 JST window
-  const jstHour = new Date(Date.now() + 9 * 60 * 60_000).getUTCHours();
-  if (jstHour < DEFAULT_START_HOUR || jstHour >= DEFAULT_END_HOUR) return;
+  // 配信ウィンドウ制約は撤廃（2026-04-25）。常時配信。
 
   const now = jstNow();
   const dueFriendScenarios = await getFriendScenariosDueForDelivery(db, now);

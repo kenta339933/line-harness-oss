@@ -14,11 +14,11 @@ export default function CcPromptButton({ prompts }: CcPromptButtonProps) {
     <>
       <button
         onClick={() => setIsOpen(true)}
-        className="fixed bottom-6 right-6 z-50 flex items-center gap-2 px-4 py-3 min-h-[48px] bg-gray-900 text-white text-sm font-medium rounded-full shadow-lg hover:bg-gray-800 transition-colors"
+        className="hidden sm:flex fixed bottom-6 right-6 z-50 items-center gap-2 px-4 py-3 min-h-[48px] bg-gray-900 text-white text-sm font-medium rounded-full shadow-lg hover:bg-gray-800 transition-colors"
         aria-label="CCに依頼"
       >
         <span className="text-base leading-none">📋</span>
-        <span className="hidden sm:inline">CCに依頼</span>
+        <span>CCに依頼</span>
       </button>
 
       <PromptModal

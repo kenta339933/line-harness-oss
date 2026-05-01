@@ -19,6 +19,13 @@ const menuSections = [
     ],
   },
   {
+    label: 'キャスト',
+    accountOnly: 'チャトナビ',
+    items: [
+      { href: '/casts', label: 'キャスト管理', icon: 'M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z' },
+    ],
+  },
+  {
     label: '配信',
     items: [
       { href: '/scenarios', label: 'シナリオ配信', icon: 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01' },
@@ -162,9 +169,55 @@ function NavIcon({ d }: { d: string }) {
   )
 }
 
+function MobileAccountPicker({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const { accounts, selectedAccount, setSelectedAccountId, loading } = useAccount()
+  if (!open || loading || accounts.length === 0) return null
+  return (
+    <>
+      <div className="lg:hidden fixed inset-0 z-50 bg-black/50" onClick={onClose} />
+      <div className="lg:hidden fixed top-12 left-2 right-2 z-50 bg-white rounded-xl shadow-2xl border border-gray-200 overflow-hidden max-h-[70vh] overflow-y-auto">
+        <div className="px-4 py-3 border-b border-gray-100">
+          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">アカウント切替</p>
+        </div>
+        {accounts.map((account) => {
+          const isSelected = account.id === selectedAccount?.id
+          const name = account.displayName || account.name
+          return (
+            <button
+              key={account.id}
+              onClick={() => {
+                setSelectedAccountId(account.id)
+                onClose()
+              }}
+              className={`w-full flex items-center gap-3 px-4 py-3 text-left transition-colors min-h-[56px] ${
+                isSelected ? 'bg-green-50' : 'hover:bg-gray-50 active:bg-gray-100'
+              } border-t border-gray-50`}
+            >
+              <AccountAvatar account={account} size={36} />
+              <div className="flex-1 min-w-0">
+                <p className={`text-sm truncate ${isSelected ? 'font-semibold text-green-700' : 'text-gray-900'}`}>
+                  {name}
+                </p>
+                {account.basicId && <p className="text-xs text-gray-400 truncate">{account.basicId}</p>}
+              </div>
+              {isSelected && (
+                <svg className="w-5 h-5 text-green-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+              )}
+            </button>
+          )
+        })}
+      </div>
+    </>
+  )
+}
+
 export default function Sidebar() {
   const pathname = usePathname()
+  const { selectedAccount } = useAccount()
   const [isOpen, setIsOpen] = useState(false)
+  const [accountPickerOpen, setAccountPickerOpen] = useState(false)
   const [staffName, setStaffName] = useState<string | null>(null)
   const [staffRole, setStaffRole] = useState<string | null>(null)
 
@@ -173,11 +226,11 @@ export default function Sidebar() {
     setStaffRole(localStorage.getItem('lh_staff_role'))
   }, [])
 
-  useEffect(() => { setIsOpen(false) }, [pathname])
+  useEffect(() => { setIsOpen(false); setAccountPickerOpen(false) }, [pathname])
   useEffect(() => {
-    document.body.style.overflow = isOpen ? 'hidden' : ''
+    document.body.style.overflow = (isOpen || accountPickerOpen) ? 'hidden' : ''
     return () => { document.body.style.overflow = '' }
-  }, [isOpen])
+  }, [isOpen, accountPickerOpen])
 
   const isActive = (href: string) => href === '/' ? pathname === '/' : pathname.startsWith(href)
 
@@ -201,7 +254,13 @@ export default function Sidebar() {
 
       {/* ナビゲーション */}
       <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
-        {menuSections.map((section, si) => (
+        {menuSections.filter((section) => {
+          if ('accountOnly' in section && section.accountOnly) {
+            const target = section.accountOnly
+            return selectedAccount?.name === target || selectedAccount?.displayName === target
+          }
+          return true
+        }).map((section, si) => (
           <div key={si}>
             {section.label && (
               <div className="pt-5 pb-2 px-3">
@@ -272,27 +331,75 @@ export default function Sidebar() {
     </>
   )
 
+  const bottomTabs = [
+    { href: '/', label: 'ホーム', icon: 'M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6' },
+    { href: '/friends', label: '友だち', icon: 'M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z' },
+    { href: '/chats', label: 'チャット', icon: 'M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z' },
+    { href: '/broadcasts', label: '配信', icon: 'M11 5.882V19.24a1.76 1.76 0 01-3.417.592l-2.147-6.15M18 13a3 3 0 100-6M5.436 13.683A4.001 4.001 0 017 6h1.832c4.1 0 7.625-1.234 9.168-3v14c-1.543-1.766-5.067-3-9.168-3H7a3.988 3.988 0 01-1.564-.317z' },
+  ]
+
   return (
     <>
-      {/* モバイル: ハンバーガーヘッダー */}
-      <div className="lg:hidden fixed top-0 left-0 right-0 z-50 bg-white border-b border-gray-200 px-4 py-3 flex items-center gap-3">
+      {/* モバイル: 上部ロゴバー（タップでアカウント切替） */}
+      <button
+        onClick={() => setAccountPickerOpen((v) => !v)}
+        className="lg:hidden fixed top-0 left-0 right-0 z-40 bg-white border-b border-gray-200 px-4 h-12 flex items-center gap-2 active:bg-gray-50"
+      >
+        {selectedAccount?.pictureUrl ? (
+          <img src={selectedAccount.pictureUrl} alt="" className="w-7 h-7 rounded-full shrink-0" />
+        ) : (
+          <div className="w-7 h-7 rounded-full flex items-center justify-center text-white font-bold text-[11px] shrink-0" style={{ backgroundColor: '#06C755' }}>
+            {(selectedAccount?.displayName || selectedAccount?.name || 'H').charAt(0)}
+          </div>
+        )}
+        <p className="text-sm font-bold text-gray-900 truncate flex-1 text-left">
+          {selectedAccount?.displayName || selectedAccount?.name || 'LINE Harness'}
+        </p>
+        <svg
+          className={`w-4 h-4 text-gray-500 shrink-0 transition-transform ${accountPickerOpen ? 'rotate-180' : ''}`}
+          fill="none" stroke="currentColor" viewBox="0 0 24 24"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      <MobileAccountPicker open={accountPickerOpen} onClose={() => setAccountPickerOpen(false)} />
+
+      {/* モバイル: ボトムナビ */}
+      <nav
+        className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-white border-t border-gray-200 flex"
+        style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
+      >
+        {bottomTabs.map((tab) => {
+          const active = isActive(tab.href)
+          return (
+            <Link
+              key={tab.href}
+              href={tab.href}
+              className={`flex-1 flex flex-col items-center justify-center gap-0.5 py-2 min-h-[56px] transition-colors ${
+                active ? 'text-[#06C755]' : 'text-gray-500'
+              }`}
+            >
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={tab.icon} />
+              </svg>
+              <span className="text-[10px] font-medium">{tab.label}</span>
+            </Link>
+          )
+        })}
         <button
-          onClick={() => setIsOpen(!isOpen)}
-          className="min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg hover:bg-gray-100 transition-colors"
+          onClick={() => setIsOpen(true)}
+          className={`flex-1 flex flex-col items-center justify-center gap-0.5 py-2 min-h-[56px] transition-colors ${
+            isOpen ? 'text-[#06C755]' : 'text-gray-500'
+          }`}
           aria-label="メニュー"
         >
-          <svg className="w-6 h-6 text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            {isOpen
-              ? <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-              : <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-            }
+          <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
           </svg>
+          <span className="text-[10px] font-medium">メニュー</span>
         </button>
-        <div className="flex items-center gap-2">
-          <div className="w-7 h-7 rounded-lg flex items-center justify-center text-white font-bold text-xs" style={{ backgroundColor: '#06C755' }}>H</div>
-          <p className="text-sm font-bold text-gray-900">LINE Harness</p>
-        </div>
-      </div>
+      </nav>
 
       {/* モバイル: オーバーレイ */}
       {isOpen && <div className="lg:hidden fixed inset-0 z-40 bg-black/50" onClick={() => setIsOpen(false)} />}

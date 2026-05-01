@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { verifySignature, LineClient } from '@line-crm/line-sdk';
-import type { WebhookRequestBody, WebhookEvent, TextEventMessage } from '@line-crm/line-sdk';
+import type { WebhookRequestBody, WebhookEvent, TextEventMessage, ImageEventMessage } from '@line-crm/line-sdk';
 import {
   upsertFriend,
   updateFriendFollowStatus,
@@ -66,7 +66,7 @@ webhook.post('/webhook', async (c) => {
   const processingPromise = (async () => {
     for (const event of body.events) {
       try {
-        await handleEvent(db, lineClient, event, channelAccessToken, matchedAccountId, c.env.WORKER_URL || new URL(c.req.url).origin, c.env.DISCORD_WEBHOOK_URL);
+        await handleEvent(db, lineClient, event, channelAccessToken, matchedAccountId, c.env.WORKER_URL || new URL(c.req.url).origin, c.env.DISCORD_WEBHOOK_URL, c.env.IMAGES, c.env.LIFF_URL);
       } catch (err) {
         console.error('Error handling webhook event:', err);
       }
@@ -86,6 +86,8 @@ async function handleEvent(
   lineAccountId: string | null = null,
   workerUrl?: string,
   discordWebhookUrl?: string,
+  imagesBucket?: R2Bucket,
+  liffUrl?: string,
 ): Promise<void> {
   if (event.type === 'follow') {
     const userId =
@@ -162,40 +164,67 @@ async function handleEvent(
           const friendScenario = await enrollFriendInScenario(db, friend.id, scenario.id);
           if (!friendScenario) continue; // already enrolled
 
-            // Immediate delivery: if the first step has delay=0, send it now via replyMessage (free)
+            // Immediate delivery:
+            //  - 最初の delay_minutes=0 ステップは replyMessage（無料）
+            //  - 続く delay_minutes=0 ステップは pushMessage で連続即時配信
+            //  - 最初の delay_minutes>0 ステップは next_delivery_at にスケジュール
             const steps = await getScenarioSteps(db, scenario.id);
             const firstStep = steps[0];
             if (firstStep && firstStep.delay_minutes === 0 && friendScenario.status === 'active') {
               try {
                 const { resolveMetadata } = await import('../services/step-delivery.js');
                 const resolvedMeta = await resolveMetadata(db, { user_id: (friend as unknown as Record<string, string | null>).user_id, metadata: (friend as unknown as Record<string, string | null>).metadata });
-                const expandedContent = expandVariables(firstStep.message_content, { ...friend, metadata: resolvedMeta } as Parameters<typeof expandVariables>[1]);
-                const message = buildMessage(firstStep.message_type, expandedContent);
-                await lineClient.replyMessage(event.replyToken, [message]);
-                console.log(`Immediate delivery: sent step ${firstStep.id} to ${userId}`);
+                const friendWithMeta = { ...friend, metadata: resolvedMeta } as Parameters<typeof expandVariables>[1];
 
-                // Log outgoing message (replyMessage = 無料)
-                const logId = crypto.randomUUID();
+                // Step 1 (free reply)
+                const firstExpanded = expandVariables(firstStep.message_content, friendWithMeta, workerUrl);
+                await lineClient.replyMessage(event.replyToken, [buildMessage(firstStep.message_type, firstExpanded)]);
+                console.log(`Immediate delivery (reply): step ${firstStep.id} → ${userId}`);
+
                 await db
                   .prepare(
                     `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, delivery_type, line_account_id, created_at)
                      VALUES (?, ?, 'outgoing', ?, ?, NULL, ?, 'reply', ?, ?)`,
                   )
-                  .bind(logId, friend.id, firstStep.message_type, firstStep.message_content, firstStep.id, lineAccountId ?? null, jstNow())
+                  .bind(crypto.randomUUID(), friend.id, firstStep.message_type, firstExpanded, firstStep.id, lineAccountId ?? null, jstNow())
                   .run();
 
-                // Advance or complete the friend_scenario
-                const secondStep = steps[1] ?? null;
-                if (secondStep) {
-                  const nextDeliveryDate = new Date(Date.now() + 9 * 60 * 60_000);
-                  nextDeliveryDate.setMinutes(nextDeliveryDate.getMinutes() + secondStep.delay_minutes);
-                  // Enforce 9:00-21:00 JST delivery window
-                  const h = nextDeliveryDate.getUTCHours();
-                  if (h < 9 || h >= 21) {
-                    if (h >= 21) nextDeliveryDate.setUTCDate(nextDeliveryDate.getUTCDate() + 1);
-                    nextDeliveryDate.setUTCHours(9, 0, 0, 0);
+                // 連続する delay=0 ステップを即時 push で送信
+                let lastSentStep = firstStep;
+                let nextStepIndex = 1;
+                while (
+                  nextStepIndex < steps.length &&
+                  steps[nextStepIndex].delay_minutes === 0
+                ) {
+                  const step = steps[nextStepIndex];
+                  const expanded = expandVariables(step.message_content, friendWithMeta, workerUrl);
+                  try {
+                    await lineClient.pushMessage(friend.line_user_id, [buildMessage(step.message_type, expanded)]);
+                    console.log(`Immediate delivery (push): step ${step.id} → ${userId}`);
+
+                    await db
+                      .prepare(
+                        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, delivery_type, line_account_id, created_at)
+                         VALUES (?, ?, 'outgoing', ?, ?, NULL, ?, 'push', ?, ?)`,
+                      )
+                      .bind(crypto.randomUUID(), friend.id, step.message_type, expanded, step.id, lineAccountId ?? null, jstNow())
+                      .run();
+
+                    lastSentStep = step;
+                    nextStepIndex++;
+                  } catch (err) {
+                    console.error(`Failed immediate push for step ${step.id}:`, err);
+                    break;
                   }
-                  await advanceFriendScenario(db, friendScenario.id, firstStep.step_order, nextDeliveryDate.toISOString().slice(0, -1) + '+09:00');
+                }
+
+                // 次の delay>0 ステップをスケジュール、なければ完了
+                // 配信ウィンドウ制約は撤廃（2026-04-25）。delay分後に必ず配信。
+                const nextStep = steps[nextStepIndex] ?? null;
+                if (nextStep) {
+                  const nextDeliveryDate = new Date(Date.now() + 9 * 60 * 60_000);
+                  nextDeliveryDate.setMinutes(nextDeliveryDate.getMinutes() + nextStep.delay_minutes);
+                  await advanceFriendScenario(db, friendScenario.id, lastSentStep.step_order, nextDeliveryDate.toISOString().slice(0, -1) + '+09:00');
                 } else {
                   await completeFriendScenario(db, friendScenario.id);
                 }
@@ -266,6 +295,75 @@ async function handleEvent(
         break;
       }
     }
+    return;
+  }
+
+  if (event.type === 'message' && event.message.type === 'image') {
+    const imageMessage = event.message as ImageEventMessage;
+    const userId =
+      event.source.type === 'user' ? event.source.userId : undefined;
+    if (!userId) return;
+
+    let friend = await getFriendByLineUserId(db, userId);
+    if (!friend) {
+      let profile;
+      try { profile = await lineClient.getProfile(userId); } catch { /* ignore */ }
+      friend = await upsertFriend(db, {
+        lineUserId: userId,
+        displayName: profile?.displayName ?? null,
+        pictureUrl: profile?.pictureUrl ?? null,
+        statusMessage: profile?.statusMessage ?? null,
+      });
+      if (lineAccountId) {
+        await db
+          .prepare('UPDATE friends SET line_account_id = ? WHERE id = ? AND line_account_id IS NULL')
+          .bind(lineAccountId, friend.id)
+          .run();
+      }
+    }
+
+    let storedContent: string;
+    try {
+      if (!imagesBucket) throw new Error('IMAGES bucket not configured');
+      const { data, contentType } = await lineClient.getMessageContent(imageMessage.id);
+      const ext = (contentType.split('/')[1] || 'jpg').replace('jpeg', 'jpg').split(';')[0];
+      const key = `inc-${imageMessage.id}.${ext}`;
+      await imagesBucket.put(key, data, {
+        httpMetadata: { contentType },
+        customMetadata: { source: 'line-incoming', lineMessageId: imageMessage.id },
+      });
+      const publicUrl = `${workerUrl ?? ''}/images/${key}`;
+      storedContent = JSON.stringify({
+        originalContentUrl: publicUrl,
+        previewImageUrl: publicUrl,
+      });
+    } catch (err) {
+      console.error('[image] download/save failed:', err);
+      // Fallback: still log the event so the chat shows something happened
+      storedContent = JSON.stringify({
+        originalContentUrl: '',
+        previewImageUrl: '',
+        error: err instanceof Error ? err.message : 'unknown',
+      });
+    }
+
+    const logId = crypto.randomUUID();
+    await db
+      .prepare(
+        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, line_account_id, created_at)
+         VALUES (?, ?, 'incoming', 'image', ?, NULL, NULL, ?, ?)`,
+      )
+      .bind(logId, friend.id, storedContent, lineAccountId ?? null, jstNow())
+      .run();
+
+    await upsertChatOnMessage(db, friend.id, lineAccountId);
+
+    await fireEvent(db, 'message_received', {
+      friendId: friend.id,
+      eventData: { messageType: 'image', lineMessageId: imageMessage.id },
+      replyToken: event.replyToken,
+    }, lineAccessToken, lineAccountId);
+
     return;
   }
 
@@ -388,7 +486,7 @@ async function handleEvent(
               footer: { type: 'box', layout: 'vertical', paddingAll: '16px',
                 contents: [
                   { type: 'button', action: { type: 'message', label: '導入について相談する', text: '導入支援を希望します' }, style: 'primary', color: '#06C755' },
-                  ...(c.env.LIFF_URL ? [{ type: 'button', action: { type: 'uri', label: 'フィードバックを送る', uri: `${c.env.LIFF_URL}?page=form` }, style: 'secondary', margin: 'sm' }] : []),
+                  ...(liffUrl ? [{ type: 'button', action: { type: 'uri', label: 'フィードバックを送る', uri: `${liffUrl}?page=form` }, style: 'secondary', margin: 'sm' }] : []),
                 ],
               },
             }))]);

@@ -45,28 +45,66 @@ interface StatCardProps {
 
 function StatCard({ title, value, loading, icon, href, accentColor = '#06C755' }: StatCardProps) {
   return (
-    <Link href={href} className="block bg-white rounded-lg shadow-sm border border-gray-200 p-6 hover:shadow-md transition-shadow group">
-      <div className="flex items-start justify-between">
-        <div>
-          <p className="text-sm font-medium text-gray-500 mb-2">{title}</p>
+    <Link href={href} className="block bg-white rounded-lg shadow-sm border border-gray-200 p-3 sm:p-6 hover:shadow-md transition-shadow group">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-[11px] sm:text-sm font-medium text-gray-500 mb-1 sm:mb-2 truncate">{title}</p>
           {loading ? (
-            <div className="h-8 w-20 bg-gray-100 rounded animate-pulse" />
+            <div className="h-6 sm:h-8 w-16 sm:w-20 bg-gray-100 rounded animate-pulse" />
           ) : (
-            <p className="text-3xl font-bold text-gray-900">
+            <p className="text-xl sm:text-3xl font-bold text-gray-900">
               {value !== null ? value.toLocaleString('ja-JP') : '-'}
             </p>
           )}
         </div>
         <div
-          className="w-10 h-10 rounded-lg flex items-center justify-center text-white shrink-0"
+          className="w-8 h-8 sm:w-10 sm:h-10 rounded-lg flex items-center justify-center text-white shrink-0"
           style={{ backgroundColor: accentColor }}
         >
           {icon}
         </div>
       </div>
-      <p className="text-xs text-gray-400 mt-3 group-hover:text-green-600 transition-colors">
+      <p className="hidden sm:block text-xs text-gray-400 mt-3 group-hover:text-green-600 transition-colors">
         詳細を見る →
       </p>
+    </Link>
+  )
+}
+
+interface AccountMenuItem {
+  href: string
+  label: string
+  description: string
+  iconPath: string
+  accentColor: string
+}
+
+const accountSpecificMenus: Record<string, AccountMenuItem[]> = {
+  'チャトナビ': [
+    {
+      href: '/casts',
+      label: 'キャスト管理',
+      description: 'キャスト一覧・プロフィール編集',
+      iconPath: 'M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z',
+      accentColor: '#EC4899',
+    },
+  ],
+}
+
+function MiniStatLink({ title, value, loading, href }: { title: string; value: number | null; loading: boolean; href: string }) {
+  return (
+    <Link href={href} className="flex items-center justify-between bg-white rounded-lg border border-gray-200 px-3 py-2.5 hover:bg-gray-50 transition-colors">
+      <span className="text-xs text-gray-600">{title}</span>
+      <div className="flex items-center gap-2">
+        {loading ? (
+          <span className="h-3 w-6 bg-gray-100 rounded animate-pulse" />
+        ) : (
+          <span className="text-sm font-bold text-gray-900">{value !== null ? value.toLocaleString('ja-JP') : '-'}</span>
+        )}
+        <svg className="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+        </svg>
+      </div>
     </Link>
   )
 }
@@ -152,8 +190,8 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* Summary cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4 mb-8">
+      {/* 重要3KPI */}
+      <div className="grid grid-cols-3 sm:grid-cols-3 gap-2 sm:gap-4 mb-3 sm:mb-8">
         <StatCard
           title="友だち数"
           value={stats.friendCount}
@@ -167,7 +205,7 @@ export default function DashboardPage() {
           }
         />
         <StatCard
-          title="アクティブシナリオ数"
+          title="アクティブシナリオ"
           value={stats.activeScenarioCount}
           loading={loading}
           href="/scenarios"
@@ -180,7 +218,7 @@ export default function DashboardPage() {
           }
         />
         <StatCard
-          title="配信数 (合計)"
+          title="配信数"
           value={stats.broadcastCount}
           loading={loading}
           href="/broadcasts"
@@ -194,8 +232,8 @@ export default function DashboardPage() {
         />
       </div>
 
-      {/* Round 3 summary cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4 mb-8">
+      {/* 補助カウント（モバイルは小さく） */}
+      <div className="hidden sm:grid grid-cols-2 sm:grid-cols-2 xl:grid-cols-3 gap-2 sm:gap-4 mb-4 sm:mb-8">
         <StatCard
           title="テンプレート数"
           value={stats.templateCount}
@@ -237,91 +275,46 @@ export default function DashboardPage() {
         />
       </div>
 
-      {/* Quick links */}
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-        <h2 className="text-sm font-semibold text-gray-800 mb-4">クイックアクション</h2>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <Link
-            href="/friends"
-            className="flex items-center gap-3 p-3 rounded-lg border border-gray-200 hover:border-green-300 hover:bg-green-50 transition-colors group"
-          >
-            <div className="w-8 h-8 rounded-lg flex items-center justify-center text-white shrink-0" style={{ backgroundColor: '#06C755' }}>
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
-              </svg>
-            </div>
-            <div>
-              <p className="text-sm font-medium text-gray-900 group-hover:text-green-700 transition-colors">友だち管理</p>
-              <p className="text-xs text-gray-400">友だちの一覧・タグ管理</p>
-            </div>
-          </Link>
-
-          <Link
-            href="/scenarios"
-            className="flex items-center gap-3 p-3 rounded-lg border border-gray-200 hover:border-blue-300 hover:bg-blue-50 transition-colors group"
-          >
-            <div className="w-8 h-8 rounded-lg flex items-center justify-center text-white shrink-0 bg-blue-500">
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-              </svg>
-            </div>
-            <div>
-              <p className="text-sm font-medium text-gray-900 group-hover:text-blue-700 transition-colors">シナリオ配信</p>
-              <p className="text-xs text-gray-400">自動配信シナリオの作成・編集</p>
-            </div>
-          </Link>
-
-          <Link
-            href="/broadcasts"
-            className="flex items-center gap-3 p-3 rounded-lg border border-gray-200 hover:border-purple-300 hover:bg-purple-50 transition-colors group"
-          >
-            <div className="w-8 h-8 rounded-lg flex items-center justify-center text-white shrink-0 bg-purple-500">
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M11 5.882V19.24a1.76 1.76 0 01-3.417.592l-2.147-6.15M18 13a3 3 0 100-6M5.436 13.683A4.001 4.001 0 017 6h1.832c4.1 0 7.625-1.234 9.168-3v14c-1.543-1.766-5.067-3-9.168-3H7a3.988 3.988 0 01-1.564-.317z" />
-              </svg>
-            </div>
-            <div>
-              <p className="text-sm font-medium text-gray-900 group-hover:text-purple-700 transition-colors">一斉配信</p>
-              <p className="text-xs text-gray-400">メッセージの一斉送信・予約</p>
-            </div>
-          </Link>
-
-          <Link
-            href="/chats"
-            className="flex items-center gap-3 p-3 rounded-lg border border-gray-200 hover:border-green-300 hover:bg-green-50 transition-colors group"
-          >
-            <div className="w-8 h-8 rounded-lg flex items-center justify-center text-white shrink-0" style={{ backgroundColor: '#06C755' }}>
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-              </svg>
-            </div>
-            <div>
-              <p className="text-sm font-medium text-gray-900 group-hover:text-green-700 transition-colors">チャット</p>
-              <p className="text-xs text-gray-400">オペレーターチャット管理</p>
-            </div>
-          </Link>
-
-          <Link
-            href="/health"
-            className="flex items-center gap-3 p-3 rounded-lg border border-gray-200 hover:border-red-300 hover:bg-red-50 transition-colors group"
-          >
-            <div className="w-8 h-8 rounded-lg flex items-center justify-center text-white shrink-0 bg-red-500">
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-              </svg>
-            </div>
-            <div>
-              <p className="text-sm font-medium text-gray-900 group-hover:text-red-700 transition-colors">BAN検知</p>
-              <p className="text-xs text-gray-400">アカウント健康度ダッシュボード</p>
-            </div>
-          </Link>
-        </div>
+      {/* モバイル: 補助カウントは1行リンクで省スペース */}
+      <div className="sm:hidden space-y-1.5 mb-4">
+        <MiniStatLink title="テンプレート" value={stats.templateCount} loading={loading} href="/templates" />
+        <MiniStatLink title="アクティブルール" value={stats.automationCount} loading={loading} href="/automations" />
+        <MiniStatLink title="スコアリングルール" value={stats.scoringRuleCount} loading={loading} href="/scoring" />
       </div>
+
+      {/* アカウント固有メニュー（該当アカウントのみ） */}
+      {(() => {
+        const key = selectedAccount?.displayName || selectedAccount?.name || ''
+        const items = accountSpecificMenus[key] || (selectedAccount?.name ? accountSpecificMenus[selectedAccount.name] : undefined) || []
+        if (items.length === 0) return null
+        return (
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4 sm:p-6 mb-4">
+            <h2 className="text-sm font-semibold text-gray-800 mb-3">{key} 専用メニュー</h2>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {items.map((item) => (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className="flex items-center gap-3 p-3 rounded-lg border border-gray-200 hover:bg-gray-50 transition-colors"
+                >
+                  <div
+                    className="w-8 h-8 rounded-lg flex items-center justify-center text-white shrink-0"
+                    style={{ backgroundColor: item.accentColor }}
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={item.iconPath} />
+                    </svg>
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-gray-900">{item.label}</p>
+                    <p className="text-xs text-gray-400 truncate">{item.description}</p>
+                  </div>
+                </Link>
+              ))}
+            </div>
+          </div>
+        )
+      })()}
 
       <CcPromptButton prompts={ccPrompts} />
     </div>

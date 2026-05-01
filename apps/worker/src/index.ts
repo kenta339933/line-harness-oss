@@ -46,6 +46,7 @@ import { trafficPools } from './routes/traffic-pools.js';
 import { meetCallback } from './routes/meet-callback.js';
 import { messageTemplates } from './routes/message-templates.js';
 import { overview } from './routes/overview.js';
+import { casts } from './routes/casts.js';
 
 export type Env = {
   Bindings: {
@@ -64,6 +65,8 @@ export type Env = {
     IG_HARNESS_URL?: string;  // Optional: IG Harness API URL for cross-platform linking
     IG_HARNESS_LINK_SECRET?: string;  // Shared secret for IG Harness link-line webhook
     DISCORD_WEBHOOK_URL?: string;  // Optional: Discord webhook for friend add notifications
+    STRIPCHAT_STUDIO_API_KEY?: string;  // Stripchat Studio API key for cast earnings sync
+    STRIPCHAT_STUDIO_USERNAME?: string;  // Stripchat studio username (e.g. kenta3388)
   };
   Variables: {
     staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' };
@@ -118,6 +121,7 @@ app.route('/', accountSettings);
 app.route('/', meetCallback);
 app.route('/', messageTemplates);
 app.route('/', overview);
+app.route('/', casts);
 
 // Self-hosted QR code proxy — prevents leaking ref tokens to third-party services
 app.get('/api/qr', async (c) => {

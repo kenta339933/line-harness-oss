@@ -78,7 +78,129 @@ export default function FriendTable({ friends, allTags, onRefresh }: FriendTable
           {error}
         </div>
       )}
-      <div className="overflow-x-auto">
+
+      {/* モバイル: コンパクトカード */}
+      <ul className="lg:hidden divide-y divide-gray-100">
+        {friends.map((friend) => {
+          const isExpanded = expandedId === friend.id
+          const isAddingTag = addingTagForFriend === friend.id
+          const availableTags = allTags.filter(
+            (t) => !friend.tags.some((ft) => ft.id === t.id)
+          )
+          const refCode = (friend as unknown as { refCode?: string }).refCode
+          return (
+            <li key={friend.id}>
+              <button
+                onClick={() => toggleExpand(friend.id)}
+                className="w-full text-left px-4 py-3 hover:bg-gray-50 active:bg-gray-100 transition-colors"
+              >
+                <div className="flex items-center gap-3">
+                  {friend.pictureUrl ? (
+                    <img
+                      src={friend.pictureUrl}
+                      alt={friend.displayName}
+                      className="w-10 h-10 rounded-full object-cover bg-gray-100 shrink-0"
+                    />
+                  ) : (
+                    <div className="w-10 h-10 rounded-full bg-gray-200 flex items-center justify-center text-gray-500 text-sm font-medium shrink-0">
+                      {friend.displayName?.charAt(0) ?? '?'}
+                    </div>
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-baseline gap-2">
+                      <p className="text-sm font-medium text-gray-900 truncate">{friend.displayName}</p>
+                      {!friend.isFollowing && (
+                        <span className="shrink-0 text-[10px] text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded-full">ブロック</span>
+                      )}
+                    </div>
+                    {friend.statusMessage && (
+                      <p className="text-xs text-gray-400 truncate">{friend.statusMessage}</p>
+                    )}
+                    <div className="flex flex-wrap items-center gap-1 mt-1">
+                      {refCode && (
+                        <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700">
+                          {refCode}
+                        </span>
+                      )}
+                      {friend.tags.map((tag) => <TagBadge key={tag.id} tag={tag} />)}
+                      <span className="text-[11px] text-gray-400 ml-auto">{formatDate(friend.createdAt)}</span>
+                    </div>
+                  </div>
+                  <svg
+                    className={`w-4 h-4 text-gray-400 shrink-0 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
+                    fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </div>
+              </button>
+              {isExpanded && (
+                <div className="px-4 pb-4 bg-gray-50 space-y-3">
+                  <div>
+                    <p className="text-[10px] font-semibold text-gray-500 mb-1">LINE ユーザーID</p>
+                    <p className="text-[11px] text-gray-600 font-mono break-all">{friend.lineUserId}</p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-semibold text-gray-500 mb-1">タグ管理</p>
+                    <div className="flex flex-wrap gap-1.5 mb-2">
+                      {friend.tags.map((tag) => (
+                        <TagBadge
+                          key={tag.id}
+                          tag={tag}
+                          onRemove={() => handleRemoveTag(friend.id, tag.id)}
+                        />
+                      ))}
+                    </div>
+                    {isAddingTag ? (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <select
+                          className="text-sm border border-gray-300 rounded-md px-2 py-1 flex-1 min-w-[140px]"
+                          value={selectedTagId}
+                          onChange={(e) => setSelectedTagId(e.target.value)}
+                        >
+                          <option value="">タグを選択...</option>
+                          {availableTags.map((tag) => (
+                            <option key={tag.id} value={tag.id}>{tag.name}</option>
+                          ))}
+                        </select>
+                        <button
+                          onClick={() => handleAddTag(friend.id)}
+                          disabled={!selectedTagId || loading}
+                          className="px-3 py-1.5 text-xs font-medium rounded-md text-white disabled:opacity-50"
+                          style={{ backgroundColor: '#06C755' }}
+                        >
+                          追加
+                        </button>
+                        <button
+                          onClick={() => { setAddingTagForFriend(null); setSelectedTagId('') }}
+                          className="px-3 py-1.5 text-xs font-medium rounded-md text-gray-600 bg-gray-200"
+                        >
+                          キャンセル
+                        </button>
+                      </div>
+                    ) : (
+                      availableTags.length > 0 && (
+                        <button
+                          onClick={() => setAddingTagForFriend(friend.id)}
+                          className="text-xs font-medium text-green-600 flex items-center gap-1"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                          </svg>
+                          タグを追加
+                        </button>
+                      )
+                    )}
+                  </div>
+                </div>
+              )}
+            </li>
+          )
+        })}
+      </ul>
+
+      {/* デスクトップ: テーブル */}
+      <div className="hidden lg:block overflow-x-auto">
       <table className="w-full min-w-[640px]">
         <thead>
           <tr className="bg-gray-50 border-b border-gray-200">

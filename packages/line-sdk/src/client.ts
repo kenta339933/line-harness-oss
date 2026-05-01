@@ -181,6 +181,32 @@ export class LineClient {
     return this.pushMessage(to, [{ type: 'flex', altText, contents }]);
   }
 
+  // ─── Message Content (incoming media) ───────────────────────────────────
+
+  /**
+   * Download the content (image/video/audio/file) of an incoming user message.
+   * Returns the raw binary body and its content-type.
+   * Endpoint: GET https://api-data.line.me/v2/bot/message/{messageId}/content
+   */
+  async getMessageContent(
+    messageId: string,
+  ): Promise<{ data: ArrayBuffer; contentType: string }> {
+    const url = `https://api-data.line.me/v2/bot/message/${encodeURIComponent(messageId)}/content`;
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${this.channelAccessToken}` },
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(
+        `LINE API error: ${res.status} ${res.statusText} — ${text}`,
+      );
+    }
+    const data = await res.arrayBuffer();
+    const contentType = res.headers.get('content-type') ?? 'application/octet-stream';
+    return { data, contentType };
+  }
+
   // ─── Rich Menu Image Upload ─────────────────────────────────────────────
 
   /** Upload image to a rich menu. Accepts PNG/JPEG binary (ArrayBuffer or Uint8Array). */

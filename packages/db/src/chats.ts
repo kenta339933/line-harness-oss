@@ -165,9 +165,10 @@ export async function upsertChatOnMessage(
   const existing = await getChatByFriendAndAccount(db, friendId, lineAccountId);
   const now = jstNow();
   if (existing) {
-    // resolvedだった場合はunreadに戻す
-    const newStatus = existing.status === 'resolved' ? 'unread' : existing.status;
-    await updateChat(db, existing.id, { status: newStatus, lastMessageAt: now });
+    // 新着メッセージが来たら常に unread に戻す（resolved / in_progress どちらも）
+    // 理由: オペレーター返信後に相手から新しい返信が来た場合、
+    //       in_progress のままだと一覧の「未読」に出ず埋もれる問題があった (4/24修正)
+    await updateChat(db, existing.id, { status: 'unread', lastMessageAt: now });
     // 旧チャット(line_account_id が NULL)を初めて触る時は、この機会に正しい account_id を入れておく
     if (lineAccountId && !existing.line_account_id) {
       await db
