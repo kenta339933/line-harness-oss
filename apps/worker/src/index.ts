@@ -47,11 +47,13 @@ import { meetCallback } from './routes/meet-callback.js';
 import { messageTemplates } from './routes/message-templates.js';
 import { overview } from './routes/overview.js';
 import { casts } from './routes/casts.js';
+import { payslips } from './routes/payslips.js';
 
 export type Env = {
   Bindings: {
     DB: D1Database;
     IMAGES: R2Bucket;
+    PAYSLIPS: R2Bucket;
     ASSETS: Fetcher;
     LINE_CHANNEL_SECRET: string;
     LINE_CHANNEL_ACCESS_TOKEN: string;
@@ -122,6 +124,7 @@ app.route('/', meetCallback);
 app.route('/', messageTemplates);
 app.route('/', overview);
 app.route('/', casts);
+app.route('/', payslips);
 
 // Self-hosted QR code proxy — prevents leaking ref tokens to third-party services
 app.get('/api/qr', async (c) => {
@@ -384,6 +387,24 @@ async function scheduled(
     await processDuplicateDetection(env.DB);
   } catch (e) {
     console.error('Duplicate detection error:', e);
+  }
+
+  // 期限切れ payslip ファイル削除（保持期限3年経過分）
+  try {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const expired = await env.DB.prepare(
+      `SELECT token, r2_key FROM payslip_tokens WHERE retention_until < ? LIMIT 100`
+    ).bind(nowSec).all<{ token: string; r2_key: string }>();
+    for (const row of (expired.results || [])) {
+      try {
+        await env.PAYSLIPS.delete(row.r2_key);
+        await env.DB.prepare('DELETE FROM payslip_tokens WHERE token = ?').bind(row.token).run();
+      } catch (e) {
+        console.error('Payslip cleanup error:', row.token, e);
+      }
+    }
+  } catch (e) {
+    console.error('Payslip retention sweep error:', e);
   }
 }
 

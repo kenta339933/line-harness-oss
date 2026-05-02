@@ -54,6 +54,42 @@ export default function CastsPage() {
   const [syncMsg, setSyncMsg] = useState<string>('')
   const [selectedMonth, setSelectedMonth] = useState<string>(() => new Date().toISOString().slice(0, 7))
 
+  const [issuingCastId, setIssuingCastId] = useState<string | null>(null)
+  const [issueResult, setIssueResult] = useState<{ castId: string; url: string } | null>(null)
+  const [copied, setCopied] = useState(false)
+
+  const handleIssuePayslip = async (castId: string) => {
+    if (issuingCastId) return
+    setIssuingCastId(castId)
+    setIssueResult(null)
+    try {
+      const res = await fetchApi<{ success: boolean; data?: { url: string }; error?: string }>(
+        `/api/casts/${encodeURIComponent(castId)}/payslips?month=${selectedMonth}`,
+        { method: 'POST' }
+      )
+      if (res.success && res.data) {
+        setIssueResult({ castId, url: res.data.url })
+      } else {
+        setError(res.error ?? '明細書の発行に失敗しました')
+      }
+    } catch {
+      setError('明細書の発行に失敗しました')
+    } finally {
+      setIssuingCastId(null)
+    }
+  }
+
+  const handleCopyUrl = async (url: string) => {
+    try {
+      await navigator.clipboard.writeText(url)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      // fallback
+      window.prompt('URL（コピーしてください）', url)
+    }
+  }
+
   const monthOptions = (() => {
     const opts: { value: string; label: string }[] = []
     const now = new Date()
@@ -279,6 +315,42 @@ export default function CastsPage() {
                   <span className="truncate">紹介者: {c.introducerName ? `${c.introducerName}` : (c.introducerId ?? '—')}{c.introducerId ? ` (${introPay.toLocaleString()} tk)` : ''}</span>
                   <span className="shrink-0">{c.joinedAt ?? '—'}</span>
                 </div>
+
+                {/* 明細書発行 */}
+                <div className="mt-3 pt-3 border-t border-gray-100">
+                  {issueResult?.castId === c.id ? (
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-1 text-xs text-green-700">
+                        <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"/></svg>
+                        発行成功（60日有効・3年間R2保管）
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          readOnly
+                          value={issueResult.url}
+                          onFocus={(e) => e.currentTarget.select()}
+                          className="flex-1 text-xs border border-gray-300 rounded px-2 py-1.5 bg-gray-50 font-mono"
+                        />
+                        <button
+                          onClick={() => handleCopyUrl(issueResult.url)}
+                          className="px-3 py-1.5 text-xs font-medium text-white rounded shrink-0"
+                          style={{ backgroundColor: '#06C755' }}
+                        >
+                          {copied ? '✓' : 'コピー'}
+                        </button>
+                      </div>
+                      <p className="text-[10px] text-gray-400">このURLをLINEで送るとキャストが1タップでPDFをDLできます</p>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => handleIssuePayslip(c.id)}
+                      disabled={!!issuingCastId}
+                      className="w-full px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+                    >
+                      {issuingCastId === c.id ? '発行中...' : `📄 ${selectedMonth} の明細書を発行`}
+                    </button>
+                  )}
+                </div>
               </li>
             )
           })}
@@ -302,6 +374,7 @@ export default function CastsPage() {
                 <th className="px-3 py-3 text-right">事務所利益 (tk)</th>
                 <th className="px-3 py-3 text-left">状態</th>
                 <th className="px-3 py-3 text-left">入店日</th>
+                <th className="px-3 py-3 text-center">明細書</th>
                 <th className="px-3 py-3 text-right">詳細</th>
               </tr>
             </thead>
@@ -341,6 +414,34 @@ export default function CastsPage() {
                     </td>
                     <td className="px-3 py-3"><StatusBadge status={c.status} /></td>
                     <td className="px-3 py-3 text-gray-500">{c.joinedAt ?? '—'}</td>
+                    <td className="px-3 py-3 text-center">
+                      {issueResult?.castId === c.id ? (
+                        <div className="flex items-center justify-center gap-1">
+                          <input
+                            readOnly
+                            value={issueResult.url}
+                            onFocus={(e) => e.currentTarget.select()}
+                            className="text-[10px] border border-gray-300 rounded px-1 py-0.5 bg-gray-50 font-mono w-24"
+                          />
+                          <button
+                            onClick={() => handleCopyUrl(issueResult.url)}
+                            className="px-2 py-0.5 text-[10px] font-medium text-white rounded"
+                            style={{ backgroundColor: '#06C755' }}
+                            title="URLをコピー"
+                          >
+                            {copied ? '✓' : 'コピー'}
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => handleIssuePayslip(c.id)}
+                          disabled={!!issuingCastId}
+                          className="px-2 py-1 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
+                        >
+                          {issuingCastId === c.id ? '...' : '📄 発行'}
+                        </button>
+                      )}
+                    </td>
                     <td className="px-3 py-3 text-right">
                       <a href={`/casts/detail?slug=${encodeURIComponent(c.id)}`}
                          className="text-green-600 hover:text-green-700 text-xs font-medium">

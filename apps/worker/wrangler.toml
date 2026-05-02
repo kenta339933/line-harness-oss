@@ -22,6 +22,10 @@ database_id = "YOUR_DEV_D1_DATABASE_ID"
 binding = "IMAGES"
 bucket_name = "line-harness-images"
 
+[[r2_buckets]]
+binding = "PAYSLIPS"
+bucket_name = "line-harness-payslips"
+
 [triggers]
 crons = ["*/5 * * * *"]
 
@@ -45,6 +49,10 @@ database_id = "YOUR_D1_DATABASE_ID"
 [[env.production.r2_buckets]]
 binding = "IMAGES"
 bucket_name = "line-harness-images"
+
+[[env.production.r2_buckets]]
+binding = "PAYSLIPS"
+bucket_name = "line-harness-payslips"
 
 [env.production.triggers]
 crons = ["*/5 * * * *"]
