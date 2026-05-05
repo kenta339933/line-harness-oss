@@ -10,6 +10,7 @@ import { refreshLineAccessTokens } from './services/token-refresh.js';
 import { processInsightFetch } from './services/insight-fetcher.js';
 import { recordFriendCountSnapshots } from './services/friend-snapshot.js';
 import { authMiddleware } from './middleware/auth.js';
+import { accountAccessQueryMiddleware } from './middleware/account-access.js';
 import { rateLimitMiddleware } from './middleware/rate-limit.js';
 import { webhook } from './routes/webhook.js';
 import { friends } from './routes/friends.js';
@@ -47,7 +48,9 @@ import { meetCallback } from './routes/meet-callback.js';
 import { messageTemplates } from './routes/message-templates.js';
 import { overview } from './routes/overview.js';
 import { casts } from './routes/casts.js';
+import { castLiff } from './routes/cast-liff.js';
 import { payslips } from './routes/payslips.js';
+import { paidReadings } from './routes/paid-readings.js';
 
 export type Env = {
   Bindings: {
@@ -86,6 +89,10 @@ app.use('*', rateLimitMiddleware);
 // Auth middleware — skips /webhook and /docs automatically
 app.use('*', authMiddleware);
 
+// Account access guard — non-owner staff can only access lineAccountIds they're assigned to.
+// Triggers on `?lineAccountId=...` query strings only; body payloads need per-route checks.
+app.use('/api/*', accountAccessQueryMiddleware);
+
 // Mount route groups — MVP & Round 2
 app.route('/', webhook);
 app.route('/', friends);
@@ -123,8 +130,10 @@ app.route('/', accountSettings);
 app.route('/', meetCallback);
 app.route('/', messageTemplates);
 app.route('/', overview);
-app.route('/', casts);
 app.route('/', payslips);
+app.route('/', paidReadings);
+app.route('/', casts);
+app.route('/', castLiff);
 
 // Self-hosted QR code proxy — prevents leaking ref tokens to third-party services
 app.get('/api/qr', async (c) => {
@@ -140,6 +149,29 @@ app.get('/api/qr', async (c) => {
       'Cache-Control': 'public, max-age=86400',
     },
   });
+});
+
+// Cast invite short link: /i/:token → 302 to liff.line.me/{liff_id}?...&invite={token}
+// 招待トークンに紐づくキャストを引き、そのキャストの所属アカウントの LIFF にリダイレクト。
+app.get('/i/:token', async (c) => {
+  const token = c.req.param('token');
+  const cast = await c.env.DB
+    .prepare(`SELECT c.id, c.line_account_id, la.liff_id AS own_liff_id
+              FROM casts c
+              LEFT JOIN line_accounts la ON la.id = c.line_account_id
+              WHERE c.invite_token = ?`)
+    .bind(token)
+    .first<{ id: string; line_account_id: string; own_liff_id: string | null }>();
+  let liffId: string | null = cast?.own_liff_id ?? null;
+  if (!liffId) {
+    const fb = await c.env.DB
+      .prepare(`SELECT liff_id FROM line_accounts WHERE liff_id IS NOT NULL AND is_active = 1 LIMIT 1`)
+      .first<{ liff_id: string }>();
+    liffId = fb?.liff_id ?? null;
+  }
+  if (!liffId) return c.text('LIFF設定がありません', 500);
+  const dest = `https://liff.line.me/${liffId}?liffId=${liffId}&page=cast-schedule&invite=${token}`;
+  return c.redirect(dest, 302);
 });
 
 // Short link: /r/:ref → landing page with LINE open button

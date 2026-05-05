@@ -4,6 +4,7 @@ import Header from '@/components/layout/header'
 import { fetchApi } from '@/lib/api'
 import type { ApiResponse } from '@line-crm/shared'
 import type { StaffMember } from '@line-crm/shared'
+import AccountAccessModal from '@/components/staff/account-access-modal'
 
 type NewApiKey = { apiKey: string; staffId: string }
 
@@ -36,6 +37,9 @@ export default function StaffPage() {
   // New API key banner
   const [newKey, setNewKey] = useState<NewApiKey | null>(null)
   const [copied, setCopied] = useState(false)
+
+  // 担当アカウント編集モーダル
+  const [accessFor, setAccessFor] = useState<StaffMember | null>(null)
 
   // Create form
   const [showForm, setShowForm] = useState(false)
@@ -310,6 +314,12 @@ export default function StaffPage() {
                       {member.role !== 'owner' && (
                         <>
                           <button
+                            onClick={() => setAccessFor(member)}
+                            className="px-2.5 py-1 text-xs font-medium text-green-700 bg-white border border-green-200 rounded hover:bg-green-50 transition-colors"
+                          >
+                            担当アカウント
+                          </button>
+                          <button
                             onClick={() => handleToggleActive(member)}
                             className="px-2.5 py-1 text-xs font-medium text-gray-600 bg-white border border-gray-300 rounded hover:bg-gray-50 transition-colors"
                           >
@@ -336,6 +346,16 @@ export default function StaffPage() {
             </tbody>
           </table>
         </div>
+      )}
+
+      {accessFor && (
+        <AccountAccessModal
+          staffId={accessFor.id}
+          staffName={accessFor.name}
+          staffRole={accessFor.role}
+          onClose={() => setAccessFor(null)}
+          onSaved={() => setAccessFor(null)}
+        />
       )}
     </div>
   )

@@ -16,6 +16,7 @@
 
 import { initBooking } from './booking.js';
 import { initForm } from './form.js';
+import { initCastSchedule } from './cast-schedule.js';
 
 declare const liff: {
   init(config: { liffId: string }): Promise<void>;
@@ -29,10 +30,18 @@ declare const liff: {
   closeWindow(): void;
 };
 
-// Resolve LIFF ID: ?liffId= param (from endpoint URL) > env var (fallback to ①)
+// Resolve LIFF ID: ?liffId= param (from endpoint URL) > liff.state内 > env var
 function detectLiffId(): string {
-  const fromParam = new URLSearchParams(window.location.search).get('liffId');
+  const search = new URLSearchParams(window.location.search);
+  const fromParam = search.get('liffId');
   if (fromParam) return fromParam;
+  // OAuth経由のリダイレクト時、元のクエリは liff.state にラップされる
+  const liffState = search.get('liff.state');
+  if (liffState) {
+    const inner = new URLSearchParams(liffState.startsWith('?') ? liffState.slice(1) : liffState);
+    const fromState = inner.get('liffId');
+    if (fromState) return fromState;
+  }
   return import.meta.env?.VITE_LIFF_ID || '';
 }
 const LIFF_ID = detectLiffId();
@@ -326,6 +335,8 @@ async function main() {
       const params = new URLSearchParams(window.location.search);
       const formId = params.get('id');
       await initForm(formId);
+    } else if (page === 'cast-schedule') {
+      await initCastSchedule();
     } else if (!page) {
       await linkAndAddFlow();
     } else {

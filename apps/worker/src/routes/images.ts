@@ -73,6 +73,7 @@ images.post('/api/images', async (c) => {
 });
 
 // GET /images/:key — serve image (public, no auth)
+// ?dl=1 を付けると Content-Disposition: attachment でダウンロード強制
 images.get('/images/:key', async (c) => {
   const key = c.req.param('key');
   const object = await c.env.IMAGES.get(key);
@@ -85,6 +86,9 @@ images.get('/images/:key', async (c) => {
   headers.set('Content-Type', object.httpMetadata?.contentType || 'image/png');
   headers.set('Cache-Control', 'public, max-age=31536000, immutable');
   headers.set('ETag', object.etag);
+  if (c.req.query('dl') === '1') {
+    headers.set('Content-Disposition', `attachment; filename="${key}"`);
+  }
 
   return new Response(object.body, { headers });
 });

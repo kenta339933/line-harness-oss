@@ -4,9 +4,10 @@ import type { Env } from '../index.js';
 
 const casts = new Hono<Env>();
 
-// All cast endpoints are owner-only. キャスト報酬・契約情報・売上はHR/経理機密。
-casts.use('/api/casts', requireRole('owner'));
-casts.use('/api/casts/*', requireRole('owner'));
+// Owner と admin（管理者）が閲覧・編集可。staff（一般）は不可。
+// 報酬・契約情報・売上は機密だが、事務所運用上 admin もアクセス必要。
+casts.use('/api/casts', requireRole('owner', 'admin'));
+casts.use('/api/casts/*', requireRole('owner', 'admin'));
 
 interface CastRow {
   id: string;
@@ -26,6 +27,7 @@ interface CastRow {
   last_synced_at: string | null;
   notes: string | null;
   working_days: number;
+  line_liff_user_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -57,6 +59,7 @@ function serialize(row: CastRow) {
     lastSyncedAt: row.last_synced_at,
     notes: row.notes,
     workingDays: row.working_days,
+    liffBound: !!row.line_liff_user_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -89,6 +92,205 @@ casts.get('/api/casts', async (c) => {
     console.error('GET /api/casts error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
+});
+
+// GET /api/casts/schedules?lineAccountId=xxx&month=YYYY-MM
+// 全キャストの月次予定+実績を一括取得（カレンダー俯瞰用）
+// ※ /api/casts/:id より先に登録すること（Honoのルーティング衝突回避）
+casts.get('/api/casts/schedules', async (c) => {
+  try {
+    const lineAccountId = c.req.query('lineAccountId');
+    const month = c.req.query('month');
+    if (!lineAccountId) {
+      return c.json({ success: false, error: 'lineAccountId is required' }, 400);
+    }
+    if (!month || !/^\d{4}-\d{2}$/.test(month)) {
+      return c.json({ success: false, error: 'month (YYYY-MM) required' }, 400);
+    }
+    const monthPrefix = `${month}-%`;
+
+    const [schedRes, earnRes] = await Promise.all([
+      c.env.DB
+        .prepare(`SELECT cast_id, line_account_id, date, start_time, end_time, status, notes, source, created_at, updated_at
+                  FROM cast_schedules
+                  WHERE line_account_id = ? AND date LIKE ?
+                  ORDER BY date ASC, cast_id ASC, start_time ASC`)
+        .bind(lineAccountId, monthPrefix)
+        .all<{
+          cast_id: string; line_account_id: string; date: string; start_time: string;
+          end_time: string | null; status: string; notes: string | null; source: string;
+          created_at: string; updated_at: string;
+        }>(),
+      c.env.DB
+        .prepare(`SELECT cast_id, date, tokens FROM cast_daily_earnings
+                  WHERE line_account_id = ? AND date LIKE ?
+                  ORDER BY date ASC, cast_id ASC`)
+        .bind(lineAccountId, monthPrefix)
+        .all<{ cast_id: string; date: string; tokens: number }>(),
+    ]);
+
+    return c.json({
+      success: true,
+      data: {
+        schedules: (schedRes.results ?? []).map((r) => ({
+          castId: r.cast_id, date: r.date, startTime: r.start_time, endTime: r.end_time,
+          status: r.status, notes: r.notes, source: r.source, updatedAt: r.updated_at,
+        })),
+        dailyEarnings: (earnRes.results ?? []).map((r) => ({
+          castId: r.cast_id, date: r.date, tokens: r.tokens,
+        })),
+      },
+    });
+  } catch (err) {
+    console.error('GET /api/casts/schedules error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// PATCH /api/casts/_introducers/:id?lineAccountId=xxx
+// body: { name: string } — 該当 introducer_id を持つ全キャストの introducer_name を一括更新
+casts.patch('/api/casts/_introducers/:id', async (c) => {
+  const introducerId = c.req.param('id');
+  const lineAccountId = c.req.query('lineAccountId');
+  if (!lineAccountId) return c.json({ success: false, error: 'lineAccountId required' }, 400);
+  const body = await c.req.json<{ name?: string | null }>();
+  const newName = (body.name ?? '').trim() || null;
+  const now = new Date().toISOString();
+  const result = await c.env.DB
+    .prepare(`UPDATE casts SET introducer_name = ?, updated_at = ? WHERE introducer_id = ? AND line_account_id = ?`)
+    .bind(newName, now, introducerId, lineAccountId)
+    .run();
+  return c.json({
+    success: true,
+    data: { introducerId, name: newName, updated: result.meta?.changes ?? 0 },
+  });
+});
+
+// GET /api/casts/_introducers?lineAccountId=xxx — 既存の紹介者リスト
+casts.get('/api/casts/_introducers', async (c) => {
+  const lineAccountId = c.req.query('lineAccountId');
+  if (!lineAccountId) {
+    return c.json({ success: false, error: 'lineAccountId required' }, 400);
+  }
+  const result = await c.env.DB
+    .prepare(`SELECT introducer_id, introducer_name, COUNT(*) AS cast_count
+              FROM casts
+              WHERE line_account_id = ? AND introducer_id IS NOT NULL AND introducer_id != ''
+              GROUP BY introducer_id
+              ORDER BY introducer_id ASC`)
+    .bind(lineAccountId)
+    .all<{ introducer_id: string; introducer_name: string | null; cast_count: number }>();
+  // 次の番号をサジェスト: INT-NNN 形式の最大値+1
+  let nextSuggestion = 'INT-001';
+  let maxNum = 0;
+  for (const r of result.results ?? []) {
+    const m = r.introducer_id.match(/^INT-(\d+)$/);
+    if (m) {
+      const n = parseInt(m[1], 10);
+      if (n > maxNum) maxNum = n;
+    }
+  }
+  if (maxNum > 0) {
+    nextSuggestion = `INT-${String(maxNum + 1).padStart(3, '0')}`;
+  }
+  return c.json({
+    success: true,
+    data: {
+      introducers: (result.results ?? []).map((r) => ({
+        id: r.introducer_id,
+        name: r.introducer_name,
+        castCount: r.cast_count,
+      })),
+      nextSuggestion,
+    },
+  });
+});
+
+// GET /api/casts/_verify-stripchat?username=xxx — Stripchatに該当ユーザーが存在するか検証
+// （cast作成前に名前ミスを検出する用途）
+casts.get('/api/casts/_verify-stripchat', async (c) => {
+  if (!c.env.STRIPCHAT_STUDIO_API_KEY || !c.env.STRIPCHAT_STUDIO_USERNAME) {
+    return c.json({ success: false, error: 'Studio API not configured' }, 500);
+  }
+  const username = (c.req.query('username') || '').trim();
+  if (!username) {
+    return c.json({ success: false, error: 'username required' }, 400);
+  }
+  if (!/^[a-zA-Z0-9_-]+$/.test(username)) {
+    return c.json({ success: false, error: 'invalid username format' }, 400);
+  }
+
+  const studioUser = encodeURIComponent(c.env.STRIPCHAT_STUDIO_USERNAME);
+  const modelUser = encodeURIComponent(username);
+  const today = new Date().toISOString().slice(0, 10);
+  // periodStart/End を直近1日に絞る（軽い検証クエリ）
+  const params = new URLSearchParams({
+    periodType: 'currentPayment',
+    periodStart: `${today} 00:00:00`,
+    periodEnd: `${today} 23:59:59`,
+  });
+  const url = `https://stripchat.com/api/stats/v2/studios/username/${studioUser}/models/username/${modelUser}?${params.toString()}`;
+  try {
+    const res = await fetch(url, {
+      headers: {
+        'API-Key': c.env.STRIPCHAT_STUDIO_API_KEY,
+        'User-Agent': 'line-crm-worker/1.0',
+        'Accept': 'application/json',
+      },
+    });
+    // 200 → 存在する。404 → 存在しない／そのスタジオに所属していない。
+    if (res.status === 200) {
+      const text = await res.text();
+      let parsed: unknown = null;
+      try { parsed = JSON.parse(text); } catch { /* keep null */ }
+      return c.json({ success: true, data: { exists: true, status: 200, sample: parsed } });
+    }
+    if (res.status === 404) {
+      return c.json({ success: true, data: { exists: false, status: 404 } });
+    }
+    return c.json({
+      success: true,
+      data: { exists: false, status: res.status, note: 'Studio APIから予期しない応答' },
+    });
+  } catch (err) {
+    return c.json({ success: false, error: err instanceof Error ? err.message : 'fetch failed' }, 500);
+  }
+});
+
+// GET /api/casts/_studio-list-debug — Stripchat Studio APIにモデル一覧APIがあるか探索
+// ※ /api/casts/:id より先に登録してルート衝突回避
+casts.get('/api/casts/_studio-list-debug', async (c) => {
+  if (!c.env.STRIPCHAT_STUDIO_API_KEY || !c.env.STRIPCHAT_STUDIO_USERNAME) {
+    return c.json({ success: false, error: 'Studio API not configured' }, 500);
+  }
+  const studio = encodeURIComponent(c.env.STRIPCHAT_STUDIO_USERNAME);
+  const apiKey = c.env.STRIPCHAT_STUDIO_API_KEY;
+  const candidates = [
+    `https://stripchat.com/api/stats/v2/studios/username/${studio}/models`,
+    `https://stripchat.com/api/stats/v2/studios/username/${studio}/models?limit=200`,
+    `https://stripchat.com/api/stats/v2/studios/username/${studio}`,
+    `https://stripchat.com/api/v2/studios/username/${studio}/models`,
+    `https://stripchat.com/api/v2/studios/${studio}/models`,
+    `https://stripchat.com/api/studios/username/${studio}/models`,
+    `https://stripchat.com/api/stats/v1/studios/username/${studio}/models`,
+  ];
+  const headers = {
+    'API-Key': apiKey,
+    'User-Agent': 'line-crm-worker/1.0',
+    'Accept': 'application/json',
+  };
+  const results = await Promise.all(candidates.map(async (url) => {
+    try {
+      const r = await fetch(url, { headers });
+      const text = await r.text();
+      let parsed: unknown = null;
+      try { parsed = JSON.parse(text); } catch { /* keep text */ }
+      return { url, status: r.status, body: parsed ?? text.slice(0, 500) };
+    } catch (err) {
+      return { url, status: 0, error: err instanceof Error ? err.message : 'fetch failed' };
+    }
+  }));
+  return c.json({ success: true, data: results });
 });
 
 // PUT /api/casts/:id — upsert (sync script からも使う)
@@ -380,6 +582,57 @@ casts.post('/api/casts/:id/sync', async (c) => {
   }
 });
 
+// GET /api/casts/:id/stripchat-debug?date=YYYY-MM-DD&periodType=...
+// 一時デバッグ用: Stripchat Studio API の生レスポンスを確認
+// startDate/endDateを別指定するとそのレンジで叩く
+casts.get('/api/casts/:id/stripchat-debug', async (c) => {
+  try {
+    const castId = c.req.param('id');
+    const date = c.req.query('date');
+    const startDate = c.req.query('startDate');
+    const endDate = c.req.query('endDate');
+    const periodType = c.req.query('periodType') || 'currentPayment';
+    if (!startDate && (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date))) {
+      return c.json({ success: false, error: 'date (YYYY-MM-DD) or startDate/endDate required' }, 400);
+    }
+    if (!c.env.STRIPCHAT_STUDIO_API_KEY || !c.env.STRIPCHAT_STUDIO_USERNAME) {
+      return c.json({ success: false, error: 'Studio API not configured' }, 500);
+    }
+    const cast = await c.env.DB.prepare('SELECT * FROM casts WHERE id = ?').bind(castId).first<CastRow>();
+    if (!cast) return c.json({ success: false, error: 'Cast not found' }, 404);
+
+    const studioUser = encodeURIComponent(c.env.STRIPCHAT_STUDIO_USERNAME);
+    const modelUser = encodeURIComponent(cast.stripchat_username);
+    const ps = startDate ? `${startDate} 00:00:00` : `${date} 00:00:00`;
+    const pe = endDate ? `${endDate} 23:59:59` : `${date} 23:59:59`;
+    const params = new URLSearchParams({
+      periodType,
+      periodStart: ps,
+      periodEnd: pe,
+    });
+    const url = `https://stripchat.com/api/stats/v2/studios/username/${studioUser}/models/username/${modelUser}?${params.toString()}`;
+    const resp = await fetch(url, {
+      headers: {
+        'API-Key': c.env.STRIPCHAT_STUDIO_API_KEY,
+        'User-Agent': 'line-crm-worker/1.0',
+        'Accept': 'application/json',
+      },
+    });
+    const text = await resp.text();
+    let parsed: unknown = null;
+    try { parsed = JSON.parse(text); } catch { /* keep text */ }
+    return c.json({
+      success: true,
+      data: {
+        request: { url, periodType, date, modelUser: cast.stripchat_username },
+        response: { status: resp.status, headers: Object.fromEntries(resp.headers.entries()), body: parsed ?? text },
+      },
+    });
+  } catch (err) {
+    return c.json({ success: false, error: err instanceof Error ? err.message : 'failed' }, 500);
+  }
+});
+
 // DELETE /api/casts/:id
 casts.delete('/api/casts/:id', async (c) => {
   try {
@@ -388,6 +641,230 @@ casts.delete('/api/casts/:id', async (c) => {
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/casts/:id error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// =====================================================================
+// 配信予定表 (cast_schedules) — Phase 1
+// =====================================================================
+
+interface ScheduleRow {
+  cast_id: string;
+  line_account_id: string;
+  date: string;
+  start_time: string;
+  end_time: string | null;
+  status: string;
+  notes: string | null;
+  source: string;
+  created_at: string;
+  updated_at: string;
+}
+
+function serializeSchedule(row: ScheduleRow) {
+  return {
+    castId: row.cast_id,
+    date: row.date,
+    startTime: row.start_time,
+    endTime: row.end_time,
+    status: row.status,
+    notes: row.notes,
+    source: row.source,
+    updatedAt: row.updated_at,
+  };
+}
+
+// (GET /api/casts/schedules は :id ルートとの衝突を避けるため上部で先に登録済み)
+
+// GET /api/casts/:id/schedules?month=YYYY-MM
+// 単一キャストの月次予定（個別カレンダー用）
+casts.get('/api/casts/:id/schedules', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const month = c.req.query('month');
+    let query = 'SELECT * FROM cast_schedules WHERE cast_id = ?';
+    const params: (string | number)[] = [id];
+    if (month && /^\d{4}-\d{2}$/.test(month)) {
+      query += ' AND date LIKE ?';
+      params.push(`${month}-%`);
+    }
+    query += ' ORDER BY date ASC, start_time ASC';
+    const result = await c.env.DB.prepare(query).bind(...params).all<ScheduleRow>();
+    return c.json({
+      success: true,
+      data: (result.results ?? []).map(serializeSchedule),
+    });
+  } catch (err) {
+    console.error('GET /api/casts/:id/schedules error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// PUT /api/casts/:id/schedules — 一括upsert
+// body: { entries: [{ date, startTime?, endTime?, status, notes? }, ...] }
+casts.put('/api/casts/:id/schedules', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const body = await c.req.json<{
+      entries: {
+        date: string;
+        startTime?: string | null;
+        endTime?: string | null;
+        status: string;
+        notes?: string | null;
+      }[];
+    }>();
+    if (!Array.isArray(body.entries)) {
+      return c.json({ success: false, error: 'entries[] required' }, 400);
+    }
+
+    const cast = await c.env.DB
+      .prepare('SELECT line_account_id FROM casts WHERE id = ?')
+      .bind(id)
+      .first<{ line_account_id: string }>();
+    if (!cast) return c.json({ success: false, error: 'Cast not found' }, 404);
+
+    const validStatus = new Set(['planned', 'off', 'tentative']);
+    const timeRe = /^([01]\d|2[0-3]):[0-5]\d$/;
+    const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+
+    const now = new Date().toISOString();
+    const stmts: D1PreparedStatement[] = [];
+    let skipped = 0;
+    for (const e of body.entries) {
+      if (!dateRe.test(e.date)) { skipped++; continue; }
+      if (!validStatus.has(e.status)) { skipped++; continue; }
+      const startTime = e.startTime && timeRe.test(e.startTime) ? e.startTime : '';
+      const endTime = e.endTime && timeRe.test(e.endTime) ? e.endTime : null;
+      const notes = e.notes ?? null;
+      stmts.push(
+        c.env.DB
+          .prepare(`
+            INSERT INTO cast_schedules (
+              cast_id, line_account_id, date, start_time, end_time, status, notes, source, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?)
+            ON CONFLICT(cast_id, date, start_time) DO UPDATE SET
+              end_time   = excluded.end_time,
+              status     = excluded.status,
+              notes      = excluded.notes,
+              source     = excluded.source,
+              updated_at = excluded.updated_at
+          `)
+          .bind(id, cast.line_account_id, e.date, startTime, endTime, e.status, notes, now, now)
+      );
+    }
+    if (stmts.length > 0) {
+      await c.env.DB.batch(stmts);
+    }
+    return c.json({ success: true, data: { upserted: stmts.length, skipped } });
+  } catch (err) {
+    console.error('PUT /api/casts/:id/schedules error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// DELETE /api/casts/:id/schedules?date=YYYY-MM-DD&startTime=HH:MM
+casts.delete('/api/casts/:id/schedules', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const date = c.req.query('date');
+    const startTime = c.req.query('startTime') ?? '';
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return c.json({ success: false, error: 'date (YYYY-MM-DD) required' }, 400);
+    }
+    await c.env.DB
+      .prepare('DELETE FROM cast_schedules WHERE cast_id = ? AND date = ? AND start_time = ?')
+      .bind(id, date, startTime)
+      .run();
+    return c.json({ success: true, data: null });
+  } catch (err) {
+    console.error('DELETE /api/casts/:id/schedules error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// =====================================================================
+// 招待トークン発行 (キャスト本人のLIFF紐付け用)
+// =====================================================================
+
+// POST /api/casts/:id/invite — 1回使い切りの招待トークンを発行する。
+// 既存トークンは上書き。返り値: { token, expiresAt, url }
+// 紐付け済み (line_liff_user_id != NULL) でも再発行可能（紐付け解除→再紐付け用）
+casts.post('/api/casts/:id/invite', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const cast = await c.env.DB
+      .prepare('SELECT id, line_account_id, stripchat_username, line_liff_user_id FROM casts WHERE id = ?')
+      .bind(id)
+      .first<{ id: string; line_account_id: string; stripchat_username: string; line_liff_user_id: string | null }>();
+    if (!cast) return c.json({ success: false, error: 'Cast not found' }, 404);
+
+    // LIFF ID 解決: ①キャスト所属アカウントのliff_id ②有効な他アカウントのliff_id ③env LIFF_URL
+    const ownAccount = await c.env.DB
+      .prepare('SELECT liff_id FROM line_accounts WHERE id = ?')
+      .bind(cast.line_account_id)
+      .first<{ liff_id: string | null }>();
+    let liffId = ownAccount?.liff_id ?? null;
+    if (!liffId) {
+      const fallback = await c.env.DB
+        .prepare(`SELECT liff_id FROM line_accounts WHERE liff_id IS NOT NULL AND is_active = 1 LIMIT 1`)
+        .first<{ liff_id: string }>();
+      liffId = fallback?.liff_id ?? null;
+    }
+
+    // 8-byte random hex (16文字, 64bit) — 短縮優先、1回使い切り24h期限なので十分
+    const buf = new Uint8Array(8);
+    crypto.getRandomValues(buf);
+    const token = Array.from(buf, (b) => b.toString(16).padStart(2, '0')).join('');
+
+    // 期限: 24時間後 ISO8601 (UTC)
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    const now = new Date().toISOString();
+
+    await c.env.DB
+      .prepare(`UPDATE casts SET invite_token = ?, invite_token_expires_at = ?, updated_at = ? WHERE id = ?`)
+      .bind(token, expiresAt, now, id)
+      .run();
+
+    // ?liffId= も付けないと main.ts が LIFF ID を取得できず liff.init() に失敗する
+    if (!liffId && !c.env.LIFF_URL) {
+      return c.json({
+        success: false,
+        error: 'LIFF設定が見つかりません。LINEアカウントのliff_idを設定するか、環境変数LIFF_URLを設定してください。',
+      }, 500);
+    }
+    // 短縮URL: ワーカー側 /i/:token がLIFF URLに302リダイレクト
+    const baseUrl = new URL(c.req.url).origin;
+    const url = `${baseUrl}/i/${token}`;
+
+    return c.json({
+      success: true,
+      data: {
+        token,
+        expiresAt,
+        url,
+        alreadyBound: !!cast.line_liff_user_id,
+      },
+    });
+  } catch (err) {
+    console.error('POST /api/casts/:id/invite error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// DELETE /api/casts/:id/invite/binding — 紐付けを解除（owner/admin用、緊急時の復旧用）
+casts.delete('/api/casts/:id/invite/binding', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const now = new Date().toISOString();
+    await c.env.DB
+      .prepare(`UPDATE casts SET line_liff_user_id = NULL, invite_token = NULL, invite_token_expires_at = NULL, updated_at = ? WHERE id = ?`)
+      .bind(now, id)
+      .run();
+    return c.json({ success: true, data: null });
+  } catch (err) {
+    console.error('DELETE binding error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

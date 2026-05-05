@@ -220,4 +220,63 @@ staff.post('/api/staff/:id/regenerate-key', requireRole('owner'), async (c) => {
   }
 });
 
+// =====================================================================
+// 担当アカウント管理 (staff_account_access)
+// owner には不要（全アカウントアクセス可能）。admin/staff の担当を制御する。
+// =====================================================================
+
+// GET /api/staff/:id/accounts — owner only. List accounts the staff can access.
+staff.get('/api/staff/:id/accounts', requireRole('owner'), async (c) => {
+  try {
+    const id = c.req.param('id')!;
+    const exists = await getStaffById(c.env.DB, id);
+    if (!exists) {
+      return c.json({ success: false, error: 'Staff member not found' }, 404);
+    }
+    const result = await c.env.DB
+      .prepare(`SELECT line_account_id FROM staff_account_access WHERE staff_id = ?`)
+      .bind(id)
+      .all<{ line_account_id: string }>();
+    return c.json({
+      success: true,
+      data: (result.results ?? []).map((r) => r.line_account_id),
+    });
+  } catch (err) {
+    console.error('GET /api/staff/:id/accounts error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// PUT /api/staff/:id/accounts — owner only. Replace access list.
+// body: { lineAccountIds: string[] }
+staff.put('/api/staff/:id/accounts', requireRole('owner'), async (c) => {
+  try {
+    const id = c.req.param('id')!;
+    const body = await c.req.json<{ lineAccountIds: string[] }>();
+    if (!Array.isArray(body.lineAccountIds)) {
+      return c.json({ success: false, error: 'lineAccountIds[] required' }, 400);
+    }
+    const exists = await getStaffById(c.env.DB, id);
+    if (!exists) {
+      return c.json({ success: false, error: 'Staff member not found' }, 404);
+    }
+    // owner は全アカウント自動アクセスのため、明示的な紐付けは不要（書いてもOKだが不要）
+    const stmts: D1PreparedStatement[] = [];
+    stmts.push(c.env.DB.prepare(`DELETE FROM staff_account_access WHERE staff_id = ?`).bind(id));
+    for (const accId of body.lineAccountIds) {
+      if (typeof accId !== 'string' || !accId) continue;
+      stmts.push(
+        c.env.DB
+          .prepare(`INSERT OR IGNORE INTO staff_account_access (staff_id, line_account_id) VALUES (?, ?)`)
+          .bind(id, accId),
+      );
+    }
+    await c.env.DB.batch(stmts);
+    return c.json({ success: true, data: { count: body.lineAccountIds.length } });
+  } catch (err) {
+    console.error('PUT /api/staff/:id/accounts error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
 export { staff };

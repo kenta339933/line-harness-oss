@@ -750,8 +750,29 @@ export default function ChatsPage() {
                     } else if (msg.messageType === 'image') {
                       try {
                         const parsed = JSON.parse(msg.content)
+                        const url = parsed.originalContentUrl || parsed.previewImageUrl
+                        const filename = (() => {
+                          try {
+                            const m = new URL(url).pathname.split('/').pop()
+                            return m || `image-${msg.id}.jpg`
+                          } catch { return `image-${msg.id}.jpg` }
+                        })()
                         bubbleContent = (
-                          <img src={parsed.originalContentUrl || parsed.previewImageUrl} alt="" className="max-w-[200px] rounded" />
+                          <div className="relative group max-w-[220px]">
+                            <a href={url} target="_blank" rel="noopener noreferrer" title="タップで原寸表示">
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img src={url} alt="" className="max-w-[200px] rounded block" />
+                            </a>
+                            <a
+                              href={`${url}${url.includes('?') ? '&' : '?'}dl=1`}
+                              download={filename}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              title="ダウンロード"
+                              className="absolute top-1 right-1 px-2 py-1 text-xs font-medium text-white bg-black/55 rounded hover:bg-black/75 opacity-90"
+                              onClick={(e) => e.stopPropagation()}
+                            >⬇</a>
+                          </div>
                         )
                       } catch {
                         bubbleContent = <span>🖼️ [画像]</span>

@@ -3,6 +3,9 @@ import { useState, useEffect } from 'react'
 import Header from '@/components/layout/header'
 import { fetchApi } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
+import ScheduleCalendar from '@/components/casts/schedule-calendar'
+import InviteModal from '@/components/casts/invite-modal'
+import AddCastModal from '@/components/casts/add-cast-modal'
 
 interface Cast {
   id: string
@@ -22,6 +25,7 @@ interface Cast {
   lastSyncedAt: string | null
   workingDays: number
   notes: string | null
+  liffBound?: boolean
 }
 
 const ALLOWED_ACCOUNT_NAME = 'チャトナビ'
@@ -35,7 +39,9 @@ function fmtJpy(tokens: number): string {
 function StatusBadge({ status }: { status: string }) {
   const cls = status === '在籍'
     ? 'bg-green-100 text-green-800'
-    : 'bg-gray-100 text-gray-500'
+    : status === '退所'
+      ? 'bg-red-50 text-red-700 line-through'
+      : 'bg-gray-100 text-gray-500'
   return (
     <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${cls}`}>
       {status}
@@ -57,6 +63,11 @@ export default function CastsPage() {
   const [issuingCastId, setIssuingCastId] = useState<string | null>(null)
   const [issueResult, setIssueResult] = useState<{ castId: string; url: string } | null>(null)
   const [copied, setCopied] = useState(false)
+  const [tab, setTab] = useState<'list' | 'schedule'>('list')
+  const [invitingCast, setInvitingCast] = useState<Cast | null>(null)
+  const [showAddCast, setShowAddCast] = useState(false)
+  const [editingCast, setEditingCast] = useState<Cast | null>(null)
+  const [statusFilter, setStatusFilter] = useState<'active' | 'retired' | 'all'>('active')
 
   const handleIssuePayslip = async (castId: string) => {
     if (issuingCastId) return
@@ -79,6 +90,44 @@ export default function CastsPage() {
     }
   }
 
+  const handleQuickRetire = async (cast: Cast) => {
+    const isRetired = cast.status === '退所'
+    const action = isRetired ? '復帰' : '退所'
+    if (!confirm(`${cast.stripchatUsername} を${action}にしますか？`)) return
+    try {
+      const res = await fetchApi<{ success: boolean; error?: string }>(
+        `/api/casts/${encodeURIComponent(cast.id)}`,
+        {
+          method: 'PUT',
+          body: JSON.stringify({
+            lineAccountId: cast.lineAccountId,
+            stripchatUsername: cast.stripchatUsername,
+            displayName: cast.displayName,
+            channel: cast.channel,
+            contractVersion: cast.contractVersion,
+            stage: cast.stage,
+            ratePercent: cast.ratePercent,
+            introducerId: cast.introducerId,
+            introducerName: cast.introducerName,
+            status: isRetired ? '在籍' : '退所',
+            joinedAt: cast.joinedAt,
+            workingDays: cast.workingDays,
+            lastMonthTokens: cast.lastMonthTokens,
+            lastMonthLabel: cast.lastMonthLabel,
+            notes: cast.notes,
+          }),
+        },
+      )
+      if (!res.success) {
+        setError(res.error ?? `${action}に失敗しました`)
+        return
+      }
+      reloadCasts()
+    } catch {
+      setError(`${action}に失敗しました`)
+    }
+  }
+
   const handleCopyUrl = async (url: string) => {
     try {
       await navigator.clipboard.writeText(url)
@@ -93,10 +142,10 @@ export default function CastsPage() {
   const monthOptions = (() => {
     const opts: { value: string; label: string }[] = []
     const now = new Date()
-    for (let i = 0; i < 6; i++) {
+    for (let i = -1; i < 6; i++) {
       const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
       const value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
-      const label = i === 0 ? `${value}（今月）` : i === 1 ? `${value}（先月）` : value
+      const label = i === -1 ? `${value}（翌月）` : i === 0 ? `${value}（今月）` : i === 1 ? `${value}（先月）` : value
       opts.push({ value, label })
     }
     return opts
@@ -207,6 +256,12 @@ export default function CastsPage() {
         title="キャスト管理"
         action={
           <div className="flex items-center gap-2 flex-wrap">
+            <button
+              onClick={() => setShowAddCast(true)}
+              className="px-3 py-2 min-h-[44px] text-sm font-medium text-green-700 bg-white border border-green-300 rounded-lg hover:bg-green-50"
+            >
+              + キャスト追加
+            </button>
             <select
               value={selectedMonth}
               onChange={(e) => setSelectedMonth(e.target.value)}
@@ -235,6 +290,40 @@ export default function CastsPage() {
         </div>
       )}
 
+      {/* タブ */}
+      <div className="flex border-b border-gray-200 mb-4">
+        <button
+          onClick={() => setTab('list')}
+          className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${
+            tab === 'list'
+              ? 'border-green-500 text-green-700'
+              : 'border-transparent text-gray-500 hover:text-gray-700'
+          }`}
+        >📋 一覧・売上</button>
+        <button
+          onClick={() => setTab('schedule')}
+          className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${
+            tab === 'schedule'
+              ? 'border-green-500 text-green-700'
+              : 'border-transparent text-gray-500 hover:text-gray-700'
+          }`}
+        >📅 配信予定表</button>
+      </div>
+
+      {tab === 'schedule' ? (
+        <ScheduleCalendar
+          lineAccountId={selectedAccount.id}
+          casts={casts.map((c) => ({
+            id: c.id,
+            stripchatUsername: c.stripchatUsername,
+            displayName: c.displayName,
+            status: c.status,
+          }))}
+          month={selectedMonth}
+          onMonthChange={setSelectedMonth}
+        />
+      ) : (
+      <>
       {/* サマリー */}
       <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-3">
         <SummaryCard label="在籍キャスト" value={`${active.length}名`} />
@@ -268,14 +357,42 @@ export default function CastsPage() {
         </div>
       ) : (
         <>
+        {/* ステータスフィルター */}
+        <div className="flex items-center gap-2 mb-3 text-xs">
+          <span className="text-gray-600">表示:</span>
+          {(['active', 'retired', 'all'] as const).map((f) => (
+            <button
+              key={f}
+              onClick={() => setStatusFilter(f)}
+              className={`px-3 py-1 rounded-full font-medium ${
+                statusFilter === f
+                  ? 'bg-green-600 text-white'
+                  : 'bg-white text-gray-600 border border-gray-300 hover:bg-gray-50'
+              }`}
+            >
+              {f === 'active' ? `在籍 (${casts.filter((c) => c.status === '在籍').length})`
+                : f === 'retired' ? `退所 (${casts.filter((c) => c.status === '退所').length})`
+                : `全て (${casts.length})`}
+            </button>
+          ))}
+        </div>
+
+        {(() => {
+          const filteredCasts = casts.filter((c) => {
+            if (statusFilter === 'active') return c.status === '在籍'
+            if (statusFilter === 'retired') return c.status === '退所'
+            return true
+          })
+          return (
+        <>
         {/* モバイル: カード表示 */}
         <ul className="lg:hidden space-y-2">
-          {casts.map((c) => {
+          {filteredCasts.map((c) => {
             const cast = Math.round(c.lastMonthTokens * c.ratePercent / 100)
             const introPay = c.introducerId ? Math.round(c.lastMonthTokens * INTRODUCER_RATE) : 0
             const officePay = c.lastMonthTokens - cast - introPay
             return (
-              <li key={c.id} className="bg-white rounded-lg shadow-sm border border-gray-200 p-3">
+              <li key={c.id} className={`bg-white rounded-lg shadow-sm border border-gray-200 p-3 ${c.status === '退所' ? 'opacity-60' : ''}`}>
                 <div className="flex items-start justify-between gap-2 mb-2">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
@@ -286,12 +403,26 @@ export default function CastsPage() {
                       {c.channel} · {c.contractVersion} · {c.stage} · {c.ratePercent}%
                     </p>
                   </div>
-                  <a
-                    href={`/casts/detail?slug=${encodeURIComponent(c.id)}`}
-                    className="shrink-0 text-xs text-green-600 font-medium px-2 py-1"
-                  >
-                    詳細→
-                  </a>
+                  <div className="flex flex-col items-end gap-1 shrink-0">
+                    <button
+                      onClick={() => handleQuickRetire(c)}
+                      className={`text-xs font-medium px-2 py-1 ${c.status === '退所' ? 'text-green-600' : 'text-red-600'}`}
+                    >
+                      {c.status === '退所' ? '↻ 復帰' : '✕ 退所'}
+                    </button>
+                    <button
+                      onClick={() => setEditingCast(c)}
+                      className="text-xs text-blue-600 font-medium px-2 py-1"
+                    >
+                      ✎ 編集
+                    </button>
+                    <a
+                      href={`/casts/detail?slug=${encodeURIComponent(c.id)}`}
+                      className="text-xs text-green-600 font-medium px-2 py-1"
+                    >
+                      詳細→
+                    </a>
+                  </div>
                 </div>
                 <div className="grid grid-cols-3 gap-2 text-center">
                   <div className="p-1.5 bg-gray-50 rounded">
@@ -316,6 +447,16 @@ export default function CastsPage() {
                   <span className="shrink-0">{c.joinedAt ?? '—'}</span>
                 </div>
 
+                {/* 招待URL */}
+                <div className="mt-2">
+                  <button
+                    onClick={() => setInvitingCast(c)}
+                    className="w-full px-3 py-1.5 text-xs font-medium text-green-700 bg-white border border-green-200 rounded hover:bg-green-50"
+                  >
+                    {c.liffBound ? '✅ 紐付け済み（再発行）' : '📨 招待URLを発行'}
+                  </button>
+                </div>
+
                 {/* 明細書発行 */}
                 <div className="mt-3 pt-3 border-t border-gray-100">
                   {issueResult?.castId === c.id ? (
@@ -325,21 +466,29 @@ export default function CastsPage() {
                         発行成功（60日有効・3年間R2保管）
                       </div>
                       <div className="flex items-center gap-1.5">
-                        <input
-                          readOnly
-                          value={issueResult.url}
-                          onFocus={(e) => e.currentTarget.select()}
-                          className="flex-1 text-xs border border-gray-300 rounded px-2 py-1.5 bg-gray-50 font-mono"
-                        />
-                        <button
-                          onClick={() => handleCopyUrl(issueResult.url)}
-                          className="px-3 py-1.5 text-xs font-medium text-white rounded shrink-0"
+                        <a
+                          href={issueResult.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex-1 text-center px-3 py-1.5 text-xs font-medium text-white rounded"
                           style={{ backgroundColor: '#06C755' }}
                         >
-                          {copied ? '✓' : 'コピー'}
+                          👁 閲覧
+                        </a>
+                        <a
+                          href={`${issueResult.url}?dl=1`}
+                          className="flex-1 text-center px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded hover:bg-gray-50"
+                        >
+                          ⬇ DL
+                        </a>
+                        <button
+                          onClick={() => handleCopyUrl(issueResult.url)}
+                          className="flex-1 px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded hover:bg-gray-50"
+                        >
+                          {copied ? '✓' : '🔗 URL'}
                         </button>
                       </div>
-                      <p className="text-[10px] text-gray-400">このURLをLINEで送るとキャストが1タップでPDFをDLできます</p>
+                      <p className="text-[10px] text-gray-400">URLコピーでLINE送信→キャストが1タップでPDF閲覧</p>
                     </div>
                   ) : (
                     <button
@@ -375,11 +524,12 @@ export default function CastsPage() {
                 <th className="px-3 py-3 text-left">状態</th>
                 <th className="px-3 py-3 text-left">入店日</th>
                 <th className="px-3 py-3 text-center">明細書</th>
+                <th className="px-3 py-3 text-center">招待</th>
                 <th className="px-3 py-3 text-right">詳細</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {casts.map((c) => {
+              {filteredCasts.map((c) => {
                 const cast = Math.round(c.lastMonthTokens * c.ratePercent / 100)
                 const introPay = c.introducerId ? Math.round(c.lastMonthTokens * INTRODUCER_RATE) : 0
                 const officePay = c.lastMonthTokens - cast - introPay
@@ -387,14 +537,17 @@ export default function CastsPage() {
                   ? `${c.introducerName}（${c.introducerId}）`
                   : (c.introducerId ?? '—')
                 return (
-                  <tr key={c.id} className="hover:bg-gray-50 transition-colors">
+                  <tr key={c.id} className={`hover:bg-gray-50 transition-colors ${c.status === '退所' ? 'opacity-60' : ''}`}>
                     <td className="px-3 py-3 font-mono">{c.stripchatUsername}</td>
                     <td className="px-3 py-3">{c.channel}</td>
                     <td className="px-3 py-3">{c.contractVersion}</td>
                     <td className="px-3 py-3">{c.stage}</td>
                     <td className="px-3 py-3 text-right">{c.ratePercent}%</td>
                     <td className="px-3 py-3 text-right">{c.workingDays}日</td>
-                    <td className="px-3 py-3 text-right">{c.lastMonthTokens.toLocaleString()}</td>
+                    <td className="px-3 py-3 text-right">
+                      {c.lastMonthTokens.toLocaleString()}
+                      <div className="text-xs text-gray-400">{fmtJpy(c.lastMonthTokens)}</div>
+                    </td>
                     <td className="px-3 py-3 text-right font-medium text-gray-900">
                       {cast.toLocaleString()}
                       <div className="text-xs text-gray-400">{fmtJpy(cast)}</div>
@@ -417,19 +570,29 @@ export default function CastsPage() {
                     <td className="px-3 py-3 text-center">
                       {issueResult?.castId === c.id ? (
                         <div className="flex items-center justify-center gap-1">
-                          <input
-                            readOnly
-                            value={issueResult.url}
-                            onFocus={(e) => e.currentTarget.select()}
-                            className="text-[10px] border border-gray-300 rounded px-1 py-0.5 bg-gray-50 font-mono w-24"
-                          />
+                          <a
+                            href={issueResult.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title="新規タブで閲覧"
+                            className="px-2 py-1 text-[11px] font-medium text-white rounded"
+                            style={{ backgroundColor: '#06C755' }}
+                          >
+                            👁
+                          </a>
+                          <a
+                            href={`${issueResult.url}?dl=1`}
+                            title="ダウンロード"
+                            className="px-2 py-1 text-[11px] font-medium text-gray-700 bg-white border border-gray-300 rounded hover:bg-gray-50"
+                          >
+                            ⬇
+                          </a>
                           <button
                             onClick={() => handleCopyUrl(issueResult.url)}
-                            className="px-2 py-0.5 text-[10px] font-medium text-white rounded"
-                            style={{ backgroundColor: '#06C755' }}
                             title="URLをコピー"
+                            className="px-2 py-1 text-[11px] font-medium text-gray-700 bg-white border border-gray-300 rounded hover:bg-gray-50"
                           >
-                            {copied ? '✓' : 'コピー'}
+                            {copied ? '✓' : '🔗'}
                           </button>
                         </div>
                       ) : (
@@ -442,11 +605,34 @@ export default function CastsPage() {
                         </button>
                       )}
                     </td>
+                    <td className="px-3 py-3 text-center">
+                      <button
+                        onClick={() => setInvitingCast(c)}
+                        title={c.liffBound ? '紐付け済み（再発行・解除）' : '招待URLを発行'}
+                        className="px-2 py-1 text-xs font-medium text-green-700 bg-white border border-green-200 rounded hover:bg-green-50"
+                      >
+                        {c.liffBound ? '✅' : '📨'}
+                      </button>
+                    </td>
                     <td className="px-3 py-3 text-right">
-                      <a href={`/casts/detail?slug=${encodeURIComponent(c.id)}`}
-                         className="text-green-600 hover:text-green-700 text-xs font-medium">
-                        詳細 →
-                      </a>
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          onClick={() => handleQuickRetire(c)}
+                          className={`text-xs font-medium ${c.status === '退所' ? 'text-green-600 hover:text-green-800' : 'text-red-600 hover:text-red-800'}`}
+                        >
+                          {c.status === '退所' ? '↻ 復帰' : '✕ 退所'}
+                        </button>
+                        <button
+                          onClick={() => setEditingCast(c)}
+                          className="text-blue-600 hover:text-blue-800 text-xs font-medium"
+                        >
+                          ✎ 編集
+                        </button>
+                        <a href={`/casts/detail?slug=${encodeURIComponent(c.id)}`}
+                           className="text-green-600 hover:text-green-700 text-xs font-medium">
+                          詳細 →
+                        </a>
+                      </div>
                     </td>
                   </tr>
                 )
@@ -455,6 +641,9 @@ export default function CastsPage() {
           </table>
         </div>
         </>
+          )
+        })()}
+        </>
       )}
 
       <p className="mt-4 text-xs text-gray-400">
@@ -462,6 +651,48 @@ export default function CastsPage() {
         ／ 売上は今月（{casts[0]?.lastMonthLabel ?? '—'}）の Stripchat Studio API <code>totalEarnings</code> を1tk≒¥{JPY_PER_TOKEN}換算
         ／ 紹介者報酬 = 売上 × {Math.round(INTRODUCER_RATE * 100)}%
       </p>
+      </>
+      )}
+
+      {invitingCast && (
+        <InviteModal
+          castId={invitingCast.id}
+          castLabel={invitingCast.stripchatUsername}
+          alreadyBound={!!invitingCast.liffBound}
+          onClose={() => setInvitingCast(null)}
+          onUnbind={reloadCasts}
+        />
+      )}
+
+      {showAddCast && selectedAccount && (
+        <AddCastModal
+          lineAccountId={selectedAccount.id}
+          onClose={() => setShowAddCast(false)}
+          onCreated={reloadCasts}
+        />
+      )}
+
+      {editingCast && selectedAccount && (
+        <AddCastModal
+          lineAccountId={selectedAccount.id}
+          onClose={() => setEditingCast(null)}
+          onCreated={reloadCasts}
+          existingCast={{
+            id: editingCast.id,
+            stripchatUsername: editingCast.stripchatUsername,
+            displayName: editingCast.displayName,
+            channel: editingCast.channel,
+            contractVersion: editingCast.contractVersion,
+            stage: editingCast.stage,
+            ratePercent: editingCast.ratePercent,
+            introducerId: editingCast.introducerId,
+            introducerName: editingCast.introducerName,
+            status: editingCast.status,
+            joinedAt: editingCast.joinedAt,
+            notes: editingCast.notes ?? null,
+          }}
+        />
+      )}
     </div>
   )
 }

@@ -8,6 +8,7 @@ import {
 } from '@line-crm/db';
 import type { LineAccount as DbLineAccount } from '@line-crm/db';
 import { requireRole } from '../middleware/role-guard.js';
+import { assertAccountAccess, getAccessibleAccountIds } from '../middleware/account-access.js';
 import type { Env } from '../index.js';
 
 const lineAccounts = new Hono<Env>();
@@ -47,10 +48,16 @@ async function fetchBotProfile(accessToken: string): Promise<{ displayName?: str
 }
 
 // GET /api/line-accounts - list all (with LINE profile + stats)
+// 非ownerは自分の staff_account_access に登録されたアカウントだけ返す。
 lineAccounts.get('/api/line-accounts', async (c) => {
   try {
     const db = c.env.DB;
-    const items = await getLineAccounts(db);
+    const allowed = await getAccessibleAccountIds(c);
+    let items = await getLineAccounts(db);
+    if (allowed !== null) {
+      const allowedSet = new Set(allowed);
+      items = items.filter((it) => allowedSet.has(it.id));
+    }
 
     // Get stats for all accounts in parallel
     const results = await Promise.all(
@@ -93,7 +100,10 @@ lineAccounts.get('/api/line-accounts', async (c) => {
 // GET /api/line-accounts/:id - get single (secrets only for owner/admin)
 lineAccounts.get('/api/line-accounts/:id', async (c) => {
   try {
-    const account = await getLineAccountById(c.env.DB, c.req.param('id'));
+    const id = c.req.param('id');
+    const denied = await assertAccountAccess(c, id);
+    if (denied) return denied;
+    const account = await getLineAccountById(c.env.DB, id);
     if (!account) {
       return c.json({ success: false, error: 'LINE account not found' }, 404);
     }

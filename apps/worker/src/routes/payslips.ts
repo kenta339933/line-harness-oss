@@ -1,14 +1,19 @@
 import { Hono } from 'hono';
-import { PDFDocument, rgb } from 'pdf-lib';
+import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
 import { requireRole } from '../middleware/role-guard.js';
 import type { Env } from '../index.js';
 
 const payslips = new Hono<Env>();
 
-// 発行・失効は owner 限定（経理機密）
-payslips.use('/api/casts/:id/payslips', requireRole('owner'));
-payslips.use('/api/casts/:id/payslips/*', requireRole('owner'));
+// 発行・失効は owner 限定（経理機密）— ワイルドカード方式で確実にミドルウェア適用
+payslips.use('/api/casts/*', async (c, next) => {
+  const path = new URL(c.req.url).pathname;
+  if (path.includes('/payslips')) {
+    return requireRole('owner')(c, next);
+  }
+  return next();
+});
 
 const URL_VALID_DAYS = 60;
 const RETENTION_YEARS = 3;
@@ -59,94 +64,162 @@ async function buildPayslipPdf(
   const pdfDoc = await PDFDocument.create();
   pdfDoc.registerFontkit(fontkit);
   const fontBytes = await loadJapaneseFont();
-  const font = await pdfDoc.embedFont(fontBytes);
+  const jpFont = await pdfDoc.embedFont(fontBytes);
+  // ASCII専用にHelveticaを併用（NotoSansJPサブセットの英数字グリフが小サイズで字間ガタつくため）
+  const asciiFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const asciiBoldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
   const page = pdfDoc.addPage([595.28, 841.89]); // A4
   const { width, height } = page.getSize();
-  const margin = 50;
+  const margin = 48;
 
-  let y = height - margin;
+  // カラーパレット
+  const PRIMARY = rgb(0.04, 0.55, 0.34);
+  const PRIMARY_DARK = rgb(0.02, 0.4, 0.25);
+  const TEXT = rgb(0.13, 0.15, 0.18);
+  const MUTED = rgb(0.45, 0.48, 0.52);
+  const FAINT = rgb(0.72, 0.74, 0.76);
+  const BORDER = rgb(0.88, 0.89, 0.90);
+  const CARD_BG = rgb(0.96, 0.97, 0.96);
+  const ZEBRA = rgb(0.97, 0.99, 0.97);
+  const WHITE = rgb(1, 1, 1);
 
-  const drawText = (text: string, x: number, yPos: number, size = 10, color = rgb(0, 0, 0)) => {
+  // ASCII (英数字記号のみ) かどうかでフォントを切り替えて描画ガタつきを回避
+  const isAscii = (s: string): boolean => /^[\x20-\x7E]*$/.test(s);
+  const drawText = (text: string, x: number, yPos: number, opts: {
+    size?: number;
+    color?: ReturnType<typeof rgb>;
+    bold?: boolean;
+  } = {}) => {
+    const size = opts.size ?? 10;
+    const color = opts.color ?? TEXT;
+    const font = isAscii(text)
+      ? (opts.bold ? asciiBoldFont : asciiFont)
+      : jpFont;
     page.drawText(text, { x, y: yPos, size, font, color });
   };
-  const drawLine = (x1: number, y1: number, x2: number, y2: number, thickness = 0.5, color = rgb(0.7, 0.7, 0.7)) => {
+  const widthOf = (text: string, size: number, bold = false): number => {
+    const font = isAscii(text) ? (bold ? asciiBoldFont : asciiFont) : jpFont;
+    return font.widthOfTextAtSize(text, size);
+  };
+  const drawRightText = (text: string, rightX: number, yPos: number, opts: {
+    size?: number;
+    color?: ReturnType<typeof rgb>;
+    bold?: boolean;
+  } = {}) => {
+    const size = opts.size ?? 10;
+    const w = widthOf(text, size, opts.bold);
+    drawText(text, rightX - w, yPos, opts);
+  };
+  const drawRect = (x: number, yPos: number, w: number, h: number, color: ReturnType<typeof rgb>) => {
+    page.drawRectangle({ x, y: yPos, width: w, height: h, color });
+  };
+  const drawLine = (x1: number, y1: number, x2: number, y2: number, thickness = 0.5, color = BORDER) => {
     page.drawLine({ start: { x: x1, y: y1 }, end: { x: x2, y: y2 }, thickness, color });
   };
 
-  // ヘッダー
-  drawText('キャスト報酬明細書', margin, y, 20);
-  y -= 22;
-  drawText('Cast Payment Statement', margin, y, 9, rgb(0.5, 0.5, 0.5));
-  y -= 24;
+  // === ヘッダー（緑色帯） ===
+  const headerH = 76;
+  drawRect(0, height - headerH, width, headerH, PRIMARY);
+  drawText('キャスト報酬明細書', margin, height - 38, { size: 22, color: WHITE });
+  drawText('Cast Payment Statement', margin, height - 58, { size: 9, color: rgb(0.85, 0.95, 0.88) });
 
+  let y = height - headerH - 20;
+
+  // メタ情報（対象月・発行日・事務所）
   const issuedAt = new Date().toLocaleDateString('ja-JP', {
     year: 'numeric', month: 'long', day: 'numeric',
   });
-  drawText(`対象月: ${month}      発行日: ${issuedAt}      事務所: チャトナビ`, margin, y, 10);
-  y -= 14;
-  drawLine(margin, y, width - margin, y, 1, rgb(0.2, 0.2, 0.2));
-  y -= 24;
+  drawText('対象月', margin, y, { size: 8, color: MUTED });
+  drawText(month, margin + 36, y, { size: 10, color: TEXT, bold: true });
+  drawText('発行日', margin + 130, y, { size: 8, color: MUTED });
+  drawText(issuedAt, margin + 166, y, { size: 10, color: TEXT });
+  drawText('事務所', margin + 290, y, { size: 8, color: MUTED });
+  drawText('チャトナビ', margin + 326, y, { size: 10, color: TEXT });
+  y -= 26;
 
-  // キャスト情報
-  drawText('【キャスト情報】', margin, y, 12, rgb(0, 0.4, 0));
-  y -= 18;
-  drawText(`キャスト名: ${cast.stripchat_username}`, margin + 10, y, 11);
-  y -= 16;
-  drawText(`契約: ${cast.contract_version} / ${cast.stage}`, margin + 10, y, 11);
-  y -= 16;
-  drawText(`還元率: ${cast.rate_percent}%`, margin + 10, y, 11);
-  y -= 16;
-  drawText(`入店日: ${cast.joined_at ?? '-'}`, margin + 10, y, 11);
-  y -= 24;
+  // === キャスト情報 ===
+  const sectionTitle = (title: string, yPos: number): number => {
+    drawText(title, margin, yPos, { size: 11, color: PRIMARY_DARK });
+    drawLine(margin, yPos - 6, width - margin, yPos - 6, 0.6, PRIMARY);
+    return yPos - 18;
+  };
 
-  // サマリー計算
+  y = sectionTitle('キャスト情報', y);
+
+  const labelX = margin + 4;
+  const valueX = margin + 90;
+  const drawKV = (label: string, value: string, yPos: number, valueOpts: {
+    size?: number;
+    color?: ReturnType<typeof rgb>;
+    bold?: boolean;
+  } = {}): number => {
+    drawText(label, labelX, yPos, { size: 9, color: MUTED });
+    drawText(value, valueX, yPos, { size: 11, ...valueOpts });
+    return yPos - 16;
+  };
+
+  y = drawKV('キャスト名', cast.stripchat_username, y, { bold: true });
+  y = drawKV('還元率', `${cast.rate_percent}%`, y);
+  y -= 10;
+
+  // === 報酬サマリー（カード型） ===
+  y = sectionTitle('報酬サマリー', y);
+
   const totalTokens = daily.reduce((s, d) => s + d.tokens, 0);
   const workingDays = daily.filter((d) => d.tokens > 0).length;
   const castPay = Math.round((totalTokens * cast.rate_percent) / 100);
   const castPayJpy = castPay * JPY_PER_TOKEN;
 
-  // サマリーセクション
-  drawText('【報酬サマリー】', margin, y, 12, rgb(0, 0.4, 0));
-  y -= 18;
+  const cardH = 120;
+  const cardX = margin;
+  const cardW = width - margin * 2;
+  drawRect(cardX, y - cardH + 4, cardW, cardH, CARD_BG);
 
-  const boxX = margin + 10;
-  const boxW = width - 2 * margin - 20;
-  const boxStartY = y;
-  drawText(`獲得チケット総数:  ${totalTokens.toLocaleString('ja-JP')} tk`, boxX, y, 11);
-  y -= 16;
-  drawText(`稼働日数:          ${workingDays} 日`, boxX, y, 11);
-  y -= 16;
-  drawText(`還元率:            ${cast.rate_percent}%`, boxX, y, 11);
-  y -= 8;
-  drawLine(boxX, y, boxX + boxW - 20, y, 0.5, rgb(0.7, 0.7, 0.7));
-  y -= 8;
-  drawText(`キャスト報酬:      ${castPay.toLocaleString('ja-JP')} tk`, boxX, y, 12);
-  y -= 18;
-  drawText(`円換算 (1tk = ¥${JPY_PER_TOKEN}):  ¥${castPayJpy.toLocaleString('ja-JP')}`, boxX, y, 13, rgb(0, 0.4, 0));
-  y -= 24;
+  let cy = y - 16;
+  const cLabelX = cardX + 18;
+  const cValueRight = cardX + cardW - 18;
+
+  drawText('獲得チケット総数', cLabelX, cy, { size: 10, color: MUTED });
+  drawRightText(`${totalTokens.toLocaleString('ja-JP')} tk`, cValueRight, cy, { size: 11, color: TEXT });
+  cy -= 16;
+  drawText('稼働日数', cLabelX, cy, { size: 10, color: MUTED });
+  drawRightText(`${workingDays} 日`, cValueRight, cy, { size: 11, color: TEXT });
+  cy -= 16;
+  drawText('還元率', cLabelX, cy, { size: 10, color: MUTED });
+  drawRightText(`${cast.rate_percent}%`, cValueRight, cy, { size: 11, color: TEXT });
+  cy -= 8;
+  drawLine(cLabelX, cy, cValueRight, cy, 0.4, BORDER);
+  cy -= 14;
+  drawText('キャスト報酬', cLabelX, cy, { size: 11, color: TEXT });
+  drawRightText(`${castPay.toLocaleString('ja-JP')} tk`, cValueRight, cy, { size: 12, color: TEXT, bold: true });
+  cy -= 20;
+  drawText('円換算', cLabelX, cy, { size: 11, color: PRIMARY_DARK });
+  drawText(`(1tk = ¥${JPY_PER_TOKEN})`, cLabelX + widthOf('円換算', 11) + 6, cy, { size: 8, color: MUTED });
+  drawRightText(`¥${castPayJpy.toLocaleString('ja-JP')}`, cValueRight, cy, { size: 17, color: PRIMARY_DARK, bold: true });
+
+  y = y - cardH - 4;
 
   // 注記
-  drawText('※ 円換算は本明細発行時のレートを使用しています。', boxX, y, 9, rgb(0.4, 0.4, 0.4));
+  drawText('※ 円換算は本明細発行時のレートを使用。実際のお支払額は送金時の為替レートにより変動します。', margin, y, { size: 8, color: MUTED });
   y -= 11;
-  drawText('※ 実際のお支払額は送金時の為替レートによって変動します。', boxX, y, 9, rgb(0.4, 0.4, 0.4));
-  y -= 11;
-  drawText('※ 振込予定: 翌月15日頃', boxX, y, 9, rgb(0.4, 0.4, 0.4));
-  y -= 22;
+  drawText('※ 振込予定: 月末締め翌月20日払い', margin, y, { size: 8, color: MUTED });
+  y -= 20;
 
-  // 日次明細
-  drawText('【日次獲得チケット明細】', margin, y, 12, rgb(0, 0.4, 0));
-  y -= 18;
+  // === 日次獲得チケット明細 ===
+  y = sectionTitle('日次獲得チケット明細', y);
 
-  // テーブルヘッダー
-  drawText('日付', margin + 20, y, 10);
-  drawText('獲得 (tk)', margin + 200, y, 10);
-  drawText('累計 (tk)', margin + 320, y, 10);
+  const colDate = margin + 8;
+  const colTokensRight = margin + 240;
+  const colCumRight = margin + 380;
+
+  drawText('日付', colDate, y, { size: 9, color: MUTED });
+  drawRightText('獲得 (tk)', colTokensRight, y, { size: 9, color: MUTED });
+  drawRightText('累計 (tk)', colCumRight, y, { size: 9, color: MUTED });
   y -= 4;
-  drawLine(margin + 10, y, width - margin - 10, y, 0.5);
-  y -= 14;
+  drawLine(margin, y, width - margin, y, 0.5, BORDER);
+  y -= 12;
 
-  // 月の全日を表示
   const [yStr, mStr] = month.split('-');
   const yearNum = parseInt(yStr, 10);
   const monthNum = parseInt(mStr, 10);
@@ -154,29 +227,37 @@ async function buildPayslipPdf(
   const dailyMap = new Map(daily.map((d) => [d.date, d.tokens]));
   let cumulative = 0;
 
-  // 31行収まるよう行間調整
   const rowHeight = 11;
   for (let d = 1; d <= lastDay; d++) {
     const dateStr = `${month}-${String(d).padStart(2, '0')}`;
     const tokens = dailyMap.get(dateStr) ?? 0;
     cumulative += tokens;
-    const isWeekend = ((d - 1) % 7 === 5 || (d - 1) % 7 === 6); // 簡易判定（曜日計算は省略）
+    const isWorking = tokens > 0;
 
-    drawText(dateStr.slice(5), margin + 20, y, 9);
-    drawText(tokens > 0 ? tokens.toLocaleString('ja-JP') : '0', margin + 200, y, 9);
-    drawText(cumulative.toLocaleString('ja-JP'), margin + 320, y, 9);
+    if (isWorking) {
+      drawRect(margin, y - 3, width - margin * 2, rowHeight, ZEBRA);
+    }
+
+    const dateColor = isWorking ? TEXT : MUTED;
+    const valueColor = isWorking ? TEXT : FAINT;
+
+    drawText(dateStr.slice(5), colDate, y, { size: 9, color: dateColor });
+    drawRightText(tokens.toLocaleString('ja-JP'), colTokensRight, y, { size: 9, color: valueColor, bold: isWorking });
+    drawRightText(cumulative.toLocaleString('ja-JP'), colCumRight, y, { size: 9, color: valueColor });
     y -= rowHeight;
   }
-  y -= 4;
-  drawLine(margin + 10, y, width - margin - 10, y, 0.5);
-  y -= 14;
-  drawText(`合計    ${totalTokens.toLocaleString('ja-JP')} tk`, margin + 20, y, 10);
 
-  // フッター
-  const footerY = 50;
-  drawLine(margin, footerY + 30, width - margin, footerY + 30, 0.5, rgb(0.7, 0.7, 0.7));
-  drawText('チャトナビ運営事務局', margin, footerY + 15, 9, rgb(0.4, 0.4, 0.4));
-  drawText(`Token: ${cast.id}/${month}`, margin, footerY, 7, rgb(0.7, 0.7, 0.7));
+  y -= 2;
+  drawLine(margin, y, width - margin, y, 0.6, PRIMARY);
+  y -= 14;
+  drawText('合計', colDate, y, { size: 10, color: TEXT });
+  drawRightText(`${totalTokens.toLocaleString('ja-JP')} tk`, colTokensRight, y, { size: 11, color: PRIMARY_DARK, bold: true });
+
+  // === フッター ===
+  const footerY = 36;
+  drawLine(margin, footerY + 22, width - margin, footerY + 22, 0.5, BORDER);
+  drawText('チャトナビ運営事務局', margin, footerY + 8, { size: 9, color: MUTED });
+  drawText(`発行ID: ${cast.id}/${month}`, margin, footerY - 6, { size: 8, color: FAINT });
 
   return await pdfDoc.save();
 }
@@ -325,10 +406,13 @@ payslips.get('/p/:token', async (c) => {
       .run()
   );
 
+  // ?dl=1 で強制ダウンロード、デフォルトはブラウザ内閲覧
+  const isDownload = c.req.query('dl') === '1';
+  const disposition = isDownload ? 'attachment' : 'inline';
   return new Response(obj.body, {
     headers: {
       'Content-Type': 'application/pdf',
-      'Content-Disposition': `attachment; filename="payslip-${row.month}.pdf"`,
+      'Content-Disposition': `${disposition}; filename="payslip-${row.month}.pdf"`,
       'Cache-Control': 'private, no-cache',
     },
   });
