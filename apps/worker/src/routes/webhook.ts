@@ -239,7 +239,20 @@ async function handleEvent(
     }
 
     // イベントバス発火: friend_add（replyToken は Step 0 で使用済みの可能性あり）
-    await fireEvent(db, 'friend_add', { friendId: friend.id, eventData: { displayName: friend.display_name } }, lineAccessToken, lineAccountId);
+    // conversionEventName を渡すことで、ad_platforms に登録された広告媒体（Google Ads等）に
+    // 自動でCVが送信される。ad_platformsに該当媒体の登録がなければ何もしないため安全。
+    await fireEvent(
+      db,
+      'friend_add',
+      {
+        friendId: friend.id,
+        eventData: { displayName: friend.display_name },
+        conversionEventName: 'line_friend_added',
+        conversionValue: 4800,
+      },
+      lineAccessToken,
+      lineAccountId,
+    );
     return;
   }
 

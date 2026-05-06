@@ -568,6 +568,23 @@ forms.post('/api/forms/:id/submit', async (c) => {
       }
     }
 
+    // CVイベント発火: フォームに on_submit_cv_event_name が設定されていれば
+    // ad_platforms 登録媒体（Google Ads 等）にオフラインCVを送信する。
+    // 設定がなければ送信されないので、CV不要なフォームには影響しない。
+    if (friendId && form.on_submit_cv_event_name) {
+      try {
+        const { fireEvent } = await import('../services/event-bus.js');
+        await fireEvent(c.env.DB, 'form_submit', {
+          friendId,
+          eventData: { formId, formName: form.name },
+          conversionEventName: form.on_submit_cv_event_name,
+          conversionValue: form.on_submit_cv_value ?? undefined,
+        });
+      } catch (e) {
+        console.error('Failed to fire form_submit CV event:', e);
+      }
+    }
+
     return c.json({ success: true, data: serializeSubmission(submission) }, 201);
   } catch (err) {
     console.error('POST /api/forms/:id/submit error:', err);

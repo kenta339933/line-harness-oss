@@ -15,6 +15,8 @@ export interface Form {
   on_submit_webhook_url: string | null;
   on_submit_webhook_headers: string | null;
   on_submit_webhook_fail_message: string | null;
+  on_submit_cv_event_name: string | null; // ad_platforms に送るCVイベント名（例: 'application_completed'）
+  on_submit_cv_value: number | null; // CV値（円）
   save_to_metadata: number;
   is_active: number;
   submit_count: number;
