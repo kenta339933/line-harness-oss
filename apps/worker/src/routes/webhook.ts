@@ -275,6 +275,25 @@ async function handleEvent(
       lineAccessToken,
       lineAccountId,
     );
+
+    // ── Rich menu auto-link ─────────────────────────────────────
+    // Link the account's default rich menu so new friends see it.
+    // (We don't use LINE's built-in default to allow per-user control;
+    // when a friend becomes a cast, the link is removed via casts.ts.)
+    try {
+      const accountInfo = await db
+        .prepare(`SELECT default_rich_menu_id FROM line_accounts WHERE id = ?`)
+        .bind(lineAccountId)
+        .first<{ default_rich_menu_id: string | null }>();
+      if (accountInfo?.default_rich_menu_id && friend.line_user_id) {
+        await fetch(
+          `https://api.line.me/v2/bot/user/${friend.line_user_id}/richmenu/${accountInfo.default_rich_menu_id}`,
+          { method: 'POST', headers: { Authorization: `Bearer ${lineAccessToken}` } },
+        ).catch((err) => console.error('Rich menu link failed:', err));
+      }
+    } catch (err) {
+      console.error('Rich menu link error:', err);
+    }
     return;
   }
 
