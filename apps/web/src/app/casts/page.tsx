@@ -26,6 +26,8 @@ interface Cast {
   workingDays: number
   notes: string | null
   liffBound?: boolean
+  lineFriendId?: string | null
+  reminderOffsetMinutes?: number | null
 }
 
 const ALLOWED_ACCOUNT_NAME = 'チャトナビ'
@@ -115,6 +117,8 @@ export default function CastsPage() {
             lastMonthTokens: cast.lastMonthTokens,
             lastMonthLabel: cast.lastMonthLabel,
             notes: cast.notes,
+            lineFriendId: cast.lineFriendId ?? null,
+            reminderOffsetMinutes: cast.reminderOffsetMinutes ?? 30,
           }),
         },
       )
@@ -690,6 +694,8 @@ export default function CastsPage() {
             status: editingCast.status,
             joinedAt: editingCast.joinedAt,
             notes: editingCast.notes ?? null,
+            lineFriendId: editingCast.lineFriendId ?? null,
+            reminderOffsetMinutes: editingCast.reminderOffsetMinutes ?? 30,
           }}
         />
       )}

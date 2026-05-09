@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { LineClient } from '@line-crm/line-sdk';
-import { getLineAccounts, getTrafficPoolBySlug, getRandomPoolAccount, getPoolAccounts } from '@line-crm/db';
+import { getLineAccounts, getTrafficPoolBySlug, getRandomPoolAccount, getPoolAccounts, getEntryRouteByRefCode } from '@line-crm/db';
 import { processStepDeliveries } from './services/step-delivery.js';
 import { processScheduledBroadcasts, processQueuedBroadcasts } from './services/broadcast.js';
 import { processReminderDeliveries } from './services/reminder-delivery.js';
@@ -49,6 +49,7 @@ import { messageTemplates } from './routes/message-templates.js';
 import { overview } from './routes/overview.js';
 import { casts } from './routes/casts.js';
 import { castLiff } from './routes/cast-liff.js';
+import { entryRoutes } from './routes/entry-routes.js';
 import { payslips } from './routes/payslips.js';
 import { paidReadings } from './routes/paid-readings.js';
 
@@ -72,6 +73,8 @@ export type Env = {
     DISCORD_WEBHOOK_URL?: string;  // Optional: Discord webhook for friend add notifications
     STRIPCHAT_STUDIO_API_KEY?: string;  // Stripchat Studio API key for cast earnings sync
     STRIPCHAT_STUDIO_USERNAME?: string;  // Stripchat studio username (e.g. kenta3388)
+    GCAL_SA_KEY_JSON?: string;  // Google Service Account JSON for cast schedule sync
+    GCAL_CALENDAR_ID?: string;  // Target Google Calendar ID for cast schedules
   };
   Variables: {
     staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' };
@@ -134,6 +137,7 @@ app.route('/', payslips);
 app.route('/', paidReadings);
 app.route('/', casts);
 app.route('/', castLiff);
+app.route('/', entryRoutes);
 
 // Self-hosted QR code proxy — prevents leaking ref tokens to third-party services
 app.get('/api/qr', async (c) => {
@@ -184,9 +188,25 @@ app.get('/r/:ref', async (c) => {
   const baseUrl = new URL(c.req.url).origin;
 
   // Resolve LIFF URL from pool (same logic as /auth/line)
+  // Pool resolution priority:
+  //   1. ?pool=... query param (explicit override)
+  //   2. entry_route.line_account_id → matching traffic_pool (auto from ref code)
+  //   3. slug=main fallback
   let liffUrl = c.env.LIFF_URL;
-  const poolSlug = c.req.query('pool') || 'main';
-  const pool = await getTrafficPoolBySlug(c.env.DB, poolSlug);
+  let pool: { id: string; slug: string; name: string; active_account_id: string | null; is_active: number; liff_id?: string | null } | null = null;
+  const poolSlugQuery = c.req.query('pool');
+  if (poolSlugQuery) {
+    pool = await getTrafficPoolBySlug(c.env.DB, poolSlugQuery);
+  } else {
+    const route = await getEntryRouteByRefCode(c.env.DB, ref);
+    if (route?.line_account_id) {
+      pool = await c.env.DB
+        .prepare(`SELECT * FROM traffic_pools WHERE active_account_id = ? AND is_active = 1 LIMIT 1`)
+        .bind(route.line_account_id)
+        .first();
+    }
+    if (!pool) pool = await getTrafficPoolBySlug(c.env.DB, 'main');
+  }
   if (pool) {
     const account = await getRandomPoolAccount(c.env.DB, pool.id);
     if (account) {
@@ -235,8 +255,7 @@ app.get('/r/:ref', async (c) => {
   const isOtherInApp = /\b(fbav|fban|instagram|line\/|micromessenger)\b/i.test(c.req.header('user-agent') || '');
 
   if (isMobile && (isXInAppBrowser || isOtherInApp)) {
-    // In-app browser path: explain the issue + offer two recovery paths
-    const inAppName = isXInAppBrowser ? 'X' : 'アプリ内';
+    // In-app browser path: button first, fallback steps collapsed below
     return c.html(`<!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -247,15 +266,15 @@ app.get('/r/:ref', async (c) => {
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;background:#f5f7f5;display:flex;justify-content:center;align-items:center;min-height:100vh;padding:16px}
 .card{background:#fff;border-radius:20px;box-shadow:0 2px 20px rgba(0,0,0,0.06);text-align:center;max-width:380px;width:100%;padding:36px 24px 32px;border:1px solid rgba(0,0,0,0.04)}
-.line-icon{width:44px;height:44px;margin:0 auto 16px}
-.line-icon svg{width:44px;height:44px}
-.title{font-size:17px;color:#222;font-weight:700;margin-bottom:10px;line-height:1.5}
-.msg{font-size:13px;color:#666;margin-bottom:24px;line-height:1.7}
-.steps{background:#f9f9f9;border-radius:12px;padding:18px 20px;margin-bottom:24px;text-align:left}
-.steps-title{font-size:13px;color:#06C755;font-weight:700;margin-bottom:10px;display:flex;align-items:center;gap:6px}
-.steps ol{margin:0;padding-left:20px;font-size:13px;color:#555;line-height:1.8}
+.line-icon{width:48px;height:48px;margin:0 auto 18px}
+.line-icon svg{width:48px;height:48px}
+.title{font-size:16px;color:#444;font-weight:600;margin-bottom:24px;line-height:1.5}
 .btn{display:block;width:100%;padding:16px;border:none;border-radius:12px;font-size:16px;font-weight:700;text-decoration:none;text-align:center;color:#fff;background:#06C755;box-shadow:0 2px 12px rgba(6,199,85,0.2);transition:all .15s;cursor:pointer}
 .btn:active{transform:scale(0.98);opacity:.9}
+.fallback{margin-top:24px;padding:16px;background:#f9f9f9;border-radius:10px;text-align:left}
+.fallback-title{font-size:13px;font-weight:700;color:#666;margin-bottom:8px}
+.fallback p{font-size:12px;color:#666;line-height:1.7;margin-bottom:8px}
+.fallback ol{margin:0;padding-left:20px;font-size:12px;color:#666;line-height:1.8}
 .footer{font-size:11px;color:#bbb;margin-top:20px;line-height:1.5}
 </style>
 </head>
@@ -264,18 +283,18 @@ body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;backgroun
 <div class="line-icon">
 <svg viewBox="0 0 48 48" fill="none"><rect width="48" height="48" rx="12" fill="#06C755"/><path d="M24 12C17.37 12 12 16.58 12 22.2c0 3.54 2.35 6.65 5.86 8.47-.2.74-.76 2.75-.87 3.17-.14.55.2.54.42.39.18-.12 2.84-1.88 4-2.65.84.13 1.7.22 2.59.22 6.63 0 12-4.58 12-10.2S30.63 12 24 12z" fill="#fff"/></svg>
 </div>
-<p class="title">${inAppName}内ブラウザでは<br>LINE が開けません</p>
-<p class="msg">外部ブラウザ（Safari / Chrome）で開いてから「LINE で開く」をタップしてください</p>
-<div class="steps">
-<div class="steps-title">📱 ブラウザで開く手順</div>
+<p class="title">LINE で友だち追加します</p>
+<a href="${liffTarget}" class="btn">このまま LINE を開く</a>
+<div class="fallback">
+<p class="fallback-title">うまく開けない場合は</p>
+<p>外部ブラウザ（Safari / Chrome）で開いてから「LINE で開く」をタップしてください。</p>
 <ol>
-<li>画面下中央の URL「<strong>workers.dev ⋮</strong>」の<strong>「⋮」</strong>をタップ</li>
-<li>表示メニューから「<strong>ブラウザで開く</strong>」を選択</li>
+<li>URLバー右端の「⋮」をタップ</li>
+<li>表示メニューから「ブラウザで開く」を選択</li>
 <li>移動先のページで「LINE で開く」をタップ</li>
 </ol>
 </div>
-<a href="${liffTarget}" class="btn">このまま LINE を開く</a>
-<p class="footer">友だち追加で全機能を無料体験できます</p>
+<p class="footer">友だち追加で最新情報をお届けします</p>
 </div>
 </body>
 </html>`);
@@ -312,7 +331,7 @@ body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;backgroun
 <p class="msg">LINE アプリで開きます</p>
 <a href="${liffTarget}" class="btn">LINE で開く</a>
 <p class="fallback">開かない場合は<a href="${authFallback}">こちら</a></p>
-<p class="footer">友だち追加で全機能を無料体験できます</p>
+<p class="footer">友だち追加で最新情報をお届けします</p>
 </div>
 </body>
 </html>`);
@@ -348,7 +367,7 @@ body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;backgroun
 <img src="/api/qr?size=240x240&data=${encodeURIComponent(liffTarget)}" alt="QR Code">
 </div>
 <p class="hint">LINE アプリのカメラまたは<br>スマートフォンのカメラで読み取れます</p>
-<p class="footer">友だち追加で全機能を無料体験できます</p>
+<p class="footer">友だち追加で最新情報をお届けします</p>
 </div>
 </body>
 </html>`);
@@ -403,6 +422,12 @@ async function scheduled(
   jobs.push(checkAccountHealth(env.DB));
   jobs.push(refreshLineAccessTokens(env.DB));
   jobs.push(recordFriendCountSnapshots(env.DB));
+
+  // 配信予定リマインダー (キャストの30分前通知)
+  const { processCastReminders } = await import('./services/cast-reminder.js');
+  jobs.push(processCastReminders(env).then((r) => {
+    if (r.sent > 0 || r.failed > 0) console.log('[cast-reminder]', r);
+  }));
 
   await Promise.allSettled(jobs);
 

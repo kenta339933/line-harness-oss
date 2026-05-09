@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { upsertEvent as gcalUpsertEvent, deleteEvent as gcalDeleteEvent } from '../services/cast-schedule-gcal.js';
 import type { Env } from '../index.js';
 
 const castLiff = new Hono<Env>();
@@ -231,6 +232,7 @@ castLiff.put('/api/liff/cast/schedules', async (c) => {
 
   const now = new Date().toISOString();
   const stmts: D1PreparedStatement[] = [];
+  const acceptedEntries: Array<{ date: string; startTime: string; endTime: string | null; status: string; notes: string | null }> = [];
   let skipped = 0;
   for (const e of body.entries) {
     if (!dateRe.test(e.date)) { skipped++; continue; }
@@ -239,6 +241,7 @@ castLiff.put('/api/liff/cast/schedules', async (c) => {
     const startTime = e.startTime && timeRe.test(e.startTime) ? e.startTime : '';
     const endTime = e.endTime && timeRe.test(e.endTime) ? e.endTime : null;
     const notes = e.notes ?? null;
+    acceptedEntries.push({ date: e.date, startTime, endTime, status: e.status, notes });
     stmts.push(
       c.env.DB
         .prepare(`
@@ -258,6 +261,27 @@ castLiff.put('/api/liff/cast/schedules', async (c) => {
   if (stmts.length > 0) {
     await c.env.DB.batch(stmts);
   }
+
+  // Google Calendar 同期 (best-effort)
+  const castLabel = cast.display_name || cast.stripchat_username;
+  for (const e of acceptedEntries) {
+    const existing = await c.env.DB
+      .prepare('SELECT google_event_id FROM cast_schedules WHERE cast_id = ? AND date = ? AND start_time = ?')
+      .bind(cast.id, e.date, e.startTime)
+      .first<{ google_event_id: string | null }>();
+    const newEventId = await gcalUpsertEvent(c.env, {
+      castId: cast.id, castLabel,
+      date: e.date, startTime: e.startTime, endTime: e.endTime,
+      status: e.status, notes: e.notes,
+    }, existing?.google_event_id ?? null);
+    if (newEventId !== existing?.google_event_id) {
+      await c.env.DB
+        .prepare('UPDATE cast_schedules SET google_event_id = ? WHERE cast_id = ? AND date = ? AND start_time = ?')
+        .bind(newEventId, cast.id, e.date, e.startTime)
+        .run();
+    }
+  }
+
   return c.json({ success: true, data: { upserted: stmts.length, skipped } });
 });
 
@@ -281,10 +305,21 @@ castLiff.delete('/api/liff/cast/schedules', async (c) => {
     return c.json({ success: false, error: '過去の予定は変更できません' }, 403);
   }
 
+  // Google Calendar イベントID取得 → DB削除前に取得
+  const existing = await c.env.DB
+    .prepare('SELECT google_event_id FROM cast_schedules WHERE cast_id = ? AND date = ? AND start_time = ?')
+    .bind(cast.id, date, startTime)
+    .first<{ google_event_id: string | null }>();
+
   await c.env.DB
     .prepare('DELETE FROM cast_schedules WHERE cast_id = ? AND date = ? AND start_time = ?')
     .bind(cast.id, date, startTime)
     .run();
+
+  if (existing?.google_event_id) {
+    await gcalDeleteEvent(c.env, existing.google_event_id);
+  }
+
   return c.json({ success: true, data: null });
 });
 

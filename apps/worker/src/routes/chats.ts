@@ -106,14 +106,61 @@ chats.delete('/api/operators/:id', async (c) => {
 
 // ========== チャットCRUD ==========
 
+// POST /api/chats/_backfill-from-friends?lineAccountId=xxx
+// 既存の在籍friend全員に対して、chatsレコードがなければ作成する。
+chats.post('/api/chats/_backfill-from-friends', async (c) => {
+  try {
+    const lineAccountId = c.req.query('lineAccountId') ?? null;
+    let sql = `SELECT f.id, f.line_account_id
+               FROM friends f
+               WHERE f.is_following = 1
+                 AND NOT EXISTS (
+                   SELECT 1 FROM chats c
+                   WHERE c.friend_id = f.id
+                     AND (c.line_account_id = f.line_account_id OR c.line_account_id IS NULL)
+                 )`;
+    const bindings: unknown[] = [];
+    if (lineAccountId) {
+      sql += ' AND f.line_account_id = ?';
+      bindings.push(lineAccountId);
+    }
+
+    const stmt = bindings.length
+      ? c.env.DB.prepare(sql).bind(...bindings)
+      : c.env.DB.prepare(sql);
+    const result = await stmt.all<{ id: string; line_account_id: string | null }>();
+    const rows = result.results ?? [];
+
+    let created = 0;
+    for (const row of rows) {
+      const id = crypto.randomUUID();
+      const now = new Date().toISOString();
+      try {
+        await c.env.DB
+          .prepare(`INSERT INTO chats (id, friend_id, operator_id, line_account_id, status, last_message_at, created_at, updated_at)
+                    VALUES (?, ?, NULL, ?, 'unread', NULL, ?, ?)`)
+          .bind(id, row.id, row.line_account_id, now, now)
+          .run();
+        created++;
+      } catch (err) {
+        console.error('[backfill chat] failed for friend', row.id, err);
+      }
+    }
+    return c.json({ success: true, data: { eligibleFriends: rows.length, created } });
+  } catch (err) {
+    console.error('POST /api/chats/_backfill-from-friends error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
 chats.get('/api/chats', async (c) => {
   try {
     const status = c.req.query('status') ?? undefined;
     const operatorId = c.req.query('operatorId') ?? undefined;
     const lineAccountId = c.req.query('lineAccountId') ?? undefined;
 
-    // JOIN friends to get display_name, picture_url, is_following (block status)
-    let sql = `SELECT c.*, f.display_name, f.picture_url, f.line_user_id, f.is_following
+    // JOIN friends to get display_name, picture_url, is_following (block status), created_at (登録日時)
+    let sql = `SELECT c.*, f.display_name, f.picture_url, f.line_user_id, f.is_following, f.created_at AS friend_created_at
                FROM chats c
                LEFT JOIN friends f ON c.friend_id = f.id`;
     const conditions: string[] = [];
@@ -152,6 +199,7 @@ chats.get('/api/chats', async (c) => {
         friendId: ch.friend_id,
         friendName: ch.display_name || '名前なし',
         friendPictureUrl: ch.picture_url || null,
+        friendRegisteredAt: ch.friend_created_at || null,
         isFollowing: ch.is_following === null ? true : !!ch.is_following,
         operatorId: ch.operator_id,
         status: ch.status,
@@ -174,9 +222,9 @@ chats.get('/api/chats/:id', async (c) => {
 
     // 友だち情報を取得
     const friend = await c.env.DB
-      .prepare(`SELECT display_name, picture_url, line_user_id, is_following FROM friends WHERE id = ?`)
+      .prepare(`SELECT display_name, picture_url, line_user_id, is_following, created_at FROM friends WHERE id = ?`)
       .bind(item.friend_id)
-      .first<{ display_name: string | null; picture_url: string | null; line_user_id: string; is_following: number | null }>();
+      .first<{ display_name: string | null; picture_url: string | null; line_user_id: string; is_following: number | null; created_at: string }>();
 
     // チャットに関連するメッセージログも取得（chat の line_account_id でフィルタしてアカウント分離）
     const chatAccountId = (item as unknown as { line_account_id?: string | null }).line_account_id ?? null;
@@ -206,6 +254,7 @@ chats.get('/api/chats/:id', async (c) => {
         friendId: item.friend_id,
         friendName: friend?.display_name || '名前なし',
         friendPictureUrl: friend?.picture_url || null,
+        friendRegisteredAt: friend?.created_at || null,
         isFollowing: friend?.is_following === null ? true : !!friend?.is_following,
         operatorId: item.operator_id,
         status: item.status,
