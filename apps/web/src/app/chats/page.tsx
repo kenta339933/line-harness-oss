@@ -667,7 +667,15 @@ export default function ChatsPage() {
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-1.5">
-                            <p className={`text-sm font-medium truncate ${chat.isFollowing === false ? 'text-gray-500' : 'text-gray-900'}`}>{chat.friendName}</p>
+                            <p className={`text-sm font-medium truncate ${chat.isFollowing === false ? 'text-gray-500' : 'text-gray-900'}`}>
+                              {chat.friendName}
+                              {(() => {
+                                const linkedCast = casts.find((c) => c.lineFriendId === chat.friendId)
+                                return linkedCast ? (
+                                  <span className="ml-1 text-xs text-blue-600 font-normal">@{linkedCast.stripchatUsername}</span>
+                                ) : null
+                              })()}
+                            </p>
                             {chat.isFollowing === false && (
                               <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-red-100 text-red-700 border border-red-200 flex-shrink-0">
                                 ブロック中
