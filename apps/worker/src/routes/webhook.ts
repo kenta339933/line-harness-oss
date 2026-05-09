@@ -285,11 +285,20 @@ async function handleEvent(
         .prepare(`SELECT default_rich_menu_id FROM line_accounts WHERE id = ?`)
         .bind(lineAccountId)
         .first<{ default_rich_menu_id: string | null }>();
-      if (accountInfo?.default_rich_menu_id && friend.line_user_id) {
+      if (accountInfo?.default_rich_menu_id && userId) {
+        // Use webhook's userId (always fresh) instead of friend.line_user_id (may be stale)
         await fetch(
-          `https://api.line.me/v2/bot/user/${friend.line_user_id}/richmenu/${accountInfo.default_rich_menu_id}`,
+          `https://api.line.me/v2/bot/user/${userId}/richmenu/${accountInfo.default_rich_menu_id}`,
           { method: 'POST', headers: { Authorization: `Bearer ${lineAccessToken}` } },
         ).catch((err) => console.error('Rich menu link failed:', err));
+        // Also update friend.line_user_id if it differs (DB hygiene)
+        if (friend.line_user_id !== userId) {
+          await db
+            .prepare(`UPDATE friends SET line_user_id = ? WHERE id = ?`)
+            .bind(userId, friend.id)
+            .run()
+            .catch((err) => console.error('Update line_user_id failed:', err));
+        }
       }
     } catch (err) {
       console.error('Rich menu link error:', err);
