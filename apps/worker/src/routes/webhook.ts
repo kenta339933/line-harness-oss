@@ -16,6 +16,21 @@ import {
 } from '@line-crm/db';
 import { fireEvent } from '../services/event-bus.js';
 import { buildMessage, expandVariables } from '../services/step-delivery.js';
+
+// Build messages array for auto_replies, supporting 'multi' type for sending multiple messages
+function buildAutoReplyMessages(responseType: string, expandedContent: string) {
+  if (responseType === 'multi') {
+    try {
+      const parsed = JSON.parse(expandedContent);
+      if (Array.isArray(parsed)) {
+        return parsed.map((m: { type: string; content: unknown }) =>
+          buildMessage(m.type, typeof m.content === 'string' ? m.content : JSON.stringify(m.content))
+        );
+      }
+    } catch { /* fallthrough to single */ }
+  }
+  return [buildMessage(responseType, expandedContent)];
+}
 import type { Env } from '../index.js';
 
 const webhook = new Hono<Env>();
@@ -307,8 +322,8 @@ async function handleEvent(
           const { resolveMetadata } = await import('../services/step-delivery.js');
           const resolvedMeta = await resolveMetadata(db, { user_id: (friend as unknown as Record<string, string | null>).user_id, metadata: (friend as unknown as Record<string, string | null>).metadata });
           const expandedContent = expandVariables(rule.response_content, { ...friend, metadata: resolvedMeta } as Parameters<typeof expandVariables>[1], workerUrl);
-          const replyMsg = buildMessage(rule.response_type, expandedContent);
-          await lineClient.replyMessage(event.replyToken, [replyMsg]);
+          const replyMsgs = buildAutoReplyMessages(rule.response_type, expandedContent);
+          await lineClient.replyMessage(event.replyToken, replyMsgs);
         } catch (err) {
           console.error('Failed to send postback reply', err);
         }
@@ -561,8 +576,8 @@ async function handleEvent(
           const { resolveMetadata: resolveMeta2 } = await import('../services/step-delivery.js');
           const resolvedMeta2 = await resolveMeta2(db, { user_id: (friend as unknown as Record<string, string | null>).user_id, metadata: (friend as unknown as Record<string, string | null>).metadata });
           const expandedContent = expandVariables(rule.response_content, { ...friend, metadata: resolvedMeta2 } as Parameters<typeof expandVariables>[1], workerUrl);
-          const replyMsg = buildMessage(rule.response_type, expandedContent);
-          await lineClient.replyMessage(event.replyToken, [replyMsg]);
+          const replyMsgs = buildAutoReplyMessages(rule.response_type, expandedContent);
+          await lineClient.replyMessage(event.replyToken, replyMsgs);
           replyTokenConsumed = true;
 
           // 送信ログ（replyMessage = 無料）
