@@ -158,31 +158,66 @@ async function sendXConversion(
   }
 }
 
+async function getGoogleAccessToken(config: AdPlatformConfig): Promise<string> {
+  if (!config.client_id || !config.client_secret || !config.refresh_token) {
+    throw new Error('Google Ads config missing client_id/client_secret/refresh_token');
+  }
+  const res = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: config.client_id,
+      client_secret: config.client_secret,
+      refresh_token: config.refresh_token,
+      grant_type: 'refresh_token',
+    }),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Google OAuth token refresh failed: ${res.status} ${body}`);
+  }
+  const json = await res.json() as { access_token: string };
+  return json.access_token;
+}
+
 async function sendGoogleConversion(
   config: AdPlatformConfig,
   ref: RefTracking,
   eventName: string,
   eventValue?: number,
 ): Promise<void> {
+  const accessToken = await getGoogleAccessToken(config);
+
+  const conversionDateTime = (() => {
+    const jst = new Date(Date.now() + 9 * 60 * 60 * 1000);
+    const iso = jst.toISOString().slice(0, 19).replace('T', ' ');
+    return `${iso}+09:00`;
+  })();
+
   const url = `https://googleads.googleapis.com/v17/customers/${config.customer_id}:uploadClickConversions`;
 
   const body = {
     conversions: [{
       gclid: ref.gclid,
       conversion_action: `customers/${config.customer_id}/conversionActions/${config.conversion_action_id}`,
-      conversion_date_time: new Date().toISOString().replace('Z', '+09:00'),
+      conversion_date_time: conversionDateTime,
       ...(eventValue && { conversion_value: eventValue, currency_code: 'JPY' }),
     }],
     partial_failure: true,
   };
 
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${accessToken}`,
+    'developer-token': config.developer_token || '',
+  };
+  if (config.login_customer_id) {
+    headers['login-customer-id'] = config.login_customer_id;
+  }
+
   const response = await fetch(url, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${config.oauth_token}`,
-      'developer-token': config.developer_token || '',
-    },
+    headers,
     body: JSON.stringify(body),
   });
 

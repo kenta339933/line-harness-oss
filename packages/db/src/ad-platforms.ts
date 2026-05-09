@@ -19,10 +19,13 @@ export interface AdPlatformConfig {
   api_key?: string;
   api_secret?: string;
   // Google
-  customer_id?: string;
-  conversion_action_id?: string;
-  oauth_token?: string;
-  developer_token?: string;
+  customer_id?: string;            // CV送信先アカウント (例: "7493837221")
+  conversion_action_id?: string;   // CV2 アクションID
+  developer_token?: string;        // MCC で取得した Developer Token
+  client_id?: string;              // OAuth Client ID
+  client_secret?: string;          // OAuth Client Secret
+  refresh_token?: string;          // Refresh Token (永続)
+  login_customer_id?: string;      // MCC ID (例: "3445924142") — 必須ヘッダー
   // TikTok
   pixel_code?: string;
 }
