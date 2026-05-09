@@ -12,7 +12,7 @@
    └── deploy-worker.yml   → apps/worker → Cloudflare Worker (line-crm-worker)
    ↓
 [本番反映 約2〜3分]
-   ├── https://line-harness-web-29m.pages.dev (管理画面)
+   ├── https://app.line-crm.org (管理画面)
    └── https://api.line-crm.org (API)
 ```
 
@@ -61,7 +61,7 @@
 
 | 種類 | 名前 | URL/識別子 |
 |---|---|---|
-| Cloudflare Pages | line-harness-web | `line-harness-web-29m.pages.dev` |
+| Cloudflare Pages | line-harness-web | `app.line-crm.org` (custom) / `line-harness-web-29m.pages.dev` (default) |
 | Cloudflare Worker | line-crm-worker | `api.line-crm.org` |
 | D1 Database | line-crm | `4b93f990-6dc4-4a8e-8624-bb1173150887` |
 | R2 (画像) | line-harness-images | - |
@@ -101,7 +101,7 @@ git push origin main
 ```
 
 ### 動作確認
-- Web: https://line-harness-web-29m.pages.dev (強制リロード Cmd+Shift+R)
+- Web: https://app.line-crm.org (強制リロード Cmd+Shift+R)
 - Worker: `curl -sI https://api.line-crm.org/api/health` で200確認
 
 ### ログ確認
