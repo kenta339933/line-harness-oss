@@ -20,6 +20,8 @@ export interface CastEditValues {
   status: string
   joinedAt: string | null
   notes: string | null
+  lineFriendId?: string | null
+  reminderOffsetMinutes?: number | null
 }
 
 interface Props {
@@ -51,6 +53,13 @@ export default function AddCastModal({ lineAccountId, onClose, onCreated, existi
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
   })())
   const [notes, setNotes] = useState(existingCast?.notes ?? '')
+  const [lineFriendId, setLineFriendId] = useState<string>(existingCast?.lineFriendId ?? '')
+  const [reminderEnabled, setReminderEnabled] = useState<boolean>((existingCast?.reminderOffsetMinutes ?? 30) > 0)
+  const [reminderOffsetMinutes, setReminderOffsetMinutes] = useState<number>(
+    (existingCast?.reminderOffsetMinutes ?? 30) > 0 ? (existingCast?.reminderOffsetMinutes ?? 30) : 30
+  )
+  const [friendsList, setFriendsList] = useState<Array<{ id: string; displayName: string; pictureUrl?: string | null }>>([])
+  const [friendSearch, setFriendSearch] = useState('')
   const [verifying, setVerifying] = useState(false)
   const [verifyResult, setVerifyResult] = useState<{ ok: boolean; message: string } | null>(
     isEdit ? { ok: true, message: '✅ 既存キャスト' } : null,
@@ -59,6 +68,17 @@ export default function AddCastModal({ lineAccountId, onClose, onCreated, existi
   const [error, setError] = useState('')
 
   const ratePercent = RATE_TABLE[contractVersion]?.[channel]?.[stage] ?? 0
+
+  // チャトナビLINE友だちリスト取得（リマインド送信先紐付け用）
+  useEffect(() => {
+    fetchApi<{ success: boolean; data?: { items: Array<{ id: string; displayName: string; pictureUrl?: string | null }> } }>(
+      `/api/friends?lineAccountId=${encodeURIComponent(lineAccountId)}&limit=200&search=${encodeURIComponent(friendSearch)}`,
+    )
+      .then((res) => {
+        if (res.success && res.data) setFriendsList(res.data.items)
+      })
+      .catch(() => { /* no-op */ })
+  }, [lineAccountId, friendSearch])
 
   // 紹介者リスト取得
   const reloadIntroducers = () => {
@@ -167,6 +187,8 @@ export default function AddCastModal({ lineAccountId, onClose, onCreated, existi
         status,
         joinedAt: joinedAt || null,
         notes: notes || null,
+        lineFriendId: lineFriendId || null,
+        reminderOffsetMinutes: reminderEnabled ? reminderOffsetMinutes : 0,
       }
       const res = await fetchApi<{ success: boolean; error?: string }>(
         `/api/casts/${encodeURIComponent(username)}`,
@@ -395,6 +417,68 @@ export default function AddCastModal({ lineAccountId, onClose, onCreated, existi
               rows={2}
               className="w-full text-sm border border-gray-300 rounded px-2 py-1.5"
             />
+          </div>
+
+          {/* LINE友だち（本人）紐付け */}
+          <div className="border-t border-gray-200 pt-3 mt-2">
+            <label className="block text-xs font-semibold text-gray-700 mb-2">👤 LINE友だち（本人）</label>
+            <input
+              type="text"
+              value={friendSearch}
+              onChange={(e) => setFriendSearch(e.target.value)}
+              placeholder="名前で検索（最低1文字）"
+              className="w-full text-sm border border-gray-300 rounded px-2 py-1.5 mb-1"
+            />
+            <select
+              value={lineFriendId}
+              onChange={(e) => setLineFriendId(e.target.value)}
+              className="w-full text-sm border border-gray-300 rounded px-2 py-1.5"
+            >
+              <option value="">紐付けなし</option>
+              {friendsList.map((f) => (
+                <option key={f.id} value={f.id}>{f.displayName}</option>
+              ))}
+            </select>
+            <p className="text-[10px] text-gray-400 mt-1">
+              ※チャトナビLINE公式アカウントを友だち追加してる本人を選択
+            </p>
+          </div>
+
+          {/* 配信予定リマインド設定 */}
+          <div className="border-t border-gray-200 pt-3 mt-2">
+            <label className="flex items-center gap-2 text-xs font-semibold text-gray-700 mb-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={reminderEnabled}
+                onChange={(e) => setReminderEnabled(e.target.checked)}
+                className="w-4 h-4"
+              />
+              📨 配信予定リマインドを送信する（LINE通知）
+            </label>
+            {reminderEnabled && (
+              <div className="ml-6 space-y-2">
+                <div>
+                  <label className="block text-[10px] font-medium text-gray-600 mb-1">何分前に送信？</label>
+                  <select
+                    value={reminderOffsetMinutes}
+                    onChange={(e) => setReminderOffsetMinutes(Number(e.target.value))}
+                    className="w-full text-sm border border-gray-300 rounded px-2 py-1.5"
+                  >
+                    <option value="5">5分前</option>
+                    <option value="10">10分前</option>
+                    <option value="15">15分前</option>
+                    <option value="30">30分前</option>
+                    <option value="60">1時間前</option>
+                    <option value="120">2時間前</option>
+                  </select>
+                </div>
+                {!lineFriendId && (
+                  <p className="text-[10px] text-orange-600">
+                    ⚠️ LINE友だち未紐付けのため、リマインドは送信されません。上で紐付けしてください。
+                  </p>
+                )}
+              </div>
+            )}
           </div>
 
           {error && <p className="text-xs text-red-600">{error}</p>}
