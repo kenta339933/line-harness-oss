@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { requireRole } from '../middleware/role-guard.js';
+import { upsertEvent as gcalUpsertEvent, deleteEvent as gcalDeleteEvent } from '../services/cast-schedule-gcal.js';
 import type { Env } from '../index.js';
 
 const casts = new Hono<Env>();
@@ -28,6 +29,8 @@ interface CastRow {
   notes: string | null;
   working_days: number;
   line_liff_user_id: string | null;
+  line_friend_id: string | null;
+  reminder_offset_minutes: number;
   created_at: string;
   updated_at: string;
 }
@@ -60,6 +63,8 @@ function serialize(row: CastRow) {
     notes: row.notes,
     workingDays: row.working_days,
     liffBound: !!row.line_liff_user_id,
+    lineFriendId: row.line_friend_id ?? null,
+    reminderOffsetMinutes: row.reminder_offset_minutes ?? 30,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -313,6 +318,8 @@ casts.put('/api/casts/:id', async (c) => {
       lastMonthLabel?: string | null;
       workingDays?: number;
       notes?: string | null;
+      lineFriendId?: string | null;
+      reminderOffsetMinutes?: number | null;
     }>();
 
     if (!body.lineAccountId || !body.stripchatUsername || !body.channel
@@ -339,8 +346,8 @@ casts.put('/api/casts/:id', async (c) => {
           id, line_account_id, stripchat_username, display_name, channel,
           contract_version, stage, rate_percent, introducer_id, introducer_name, status,
           joined_at, last_month_tokens, last_month_label, last_synced_at,
-          notes, working_days, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          notes, working_days, line_friend_id, reminder_offset_minutes, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           line_account_id    = excluded.line_account_id,
           stripchat_username = excluded.stripchat_username,
@@ -358,6 +365,8 @@ casts.put('/api/casts/:id', async (c) => {
           last_synced_at     = excluded.last_synced_at,
           notes              = excluded.notes,
           working_days       = excluded.working_days,
+          line_friend_id     = excluded.line_friend_id,
+          reminder_offset_minutes = excluded.reminder_offset_minutes,
           updated_at         = excluded.updated_at
       `)
       .bind(
@@ -378,6 +387,8 @@ casts.put('/api/casts/:id', async (c) => {
         now,
         body.notes ?? null,
         body.workingDays ?? 0,
+        body.lineFriendId ?? null,
+        body.reminderOffsetMinutes ?? 30,
         now,
         now,
       )
@@ -720,9 +731,9 @@ casts.put('/api/casts/:id/schedules', async (c) => {
     }
 
     const cast = await c.env.DB
-      .prepare('SELECT line_account_id FROM casts WHERE id = ?')
+      .prepare('SELECT id, line_account_id, stripchat_username, display_name FROM casts WHERE id = ?')
       .bind(id)
-      .first<{ line_account_id: string }>();
+      .first<{ id: string; line_account_id: string; stripchat_username: string; display_name: string | null }>();
     if (!cast) return c.json({ success: false, error: 'Cast not found' }, 404);
 
     const validStatus = new Set(['planned', 'off', 'tentative']);
@@ -731,6 +742,7 @@ casts.put('/api/casts/:id/schedules', async (c) => {
 
     const now = new Date().toISOString();
     const stmts: D1PreparedStatement[] = [];
+    const acceptedEntries: Array<{ date: string; startTime: string; endTime: string | null; status: string; notes: string | null }> = [];
     let skipped = 0;
     for (const e of body.entries) {
       if (!dateRe.test(e.date)) { skipped++; continue; }
@@ -738,6 +750,7 @@ casts.put('/api/casts/:id/schedules', async (c) => {
       const startTime = e.startTime && timeRe.test(e.startTime) ? e.startTime : '';
       const endTime = e.endTime && timeRe.test(e.endTime) ? e.endTime : null;
       const notes = e.notes ?? null;
+      acceptedEntries.push({ date: e.date, startTime, endTime, status: e.status, notes });
       stmts.push(
         c.env.DB
           .prepare(`
@@ -757,10 +770,92 @@ casts.put('/api/casts/:id/schedules', async (c) => {
     if (stmts.length > 0) {
       await c.env.DB.batch(stmts);
     }
+
+    // Google Calendar 同期 (best-effort、失敗してもDB保存は成功扱い)
+    const castLabel = cast.display_name || cast.stripchat_username;
+    for (const e of acceptedEntries) {
+      const existing = await c.env.DB
+        .prepare('SELECT google_event_id FROM cast_schedules WHERE cast_id = ? AND date = ? AND start_time = ?')
+        .bind(id, e.date, e.startTime)
+        .first<{ google_event_id: string | null }>();
+      const newEventId = await gcalUpsertEvent(c.env, {
+        castId: cast.id, castLabel,
+        date: e.date, startTime: e.startTime, endTime: e.endTime,
+        status: e.status, notes: e.notes,
+      }, existing?.google_event_id ?? null);
+      if (newEventId !== existing?.google_event_id) {
+        await c.env.DB
+          .prepare('UPDATE cast_schedules SET google_event_id = ? WHERE cast_id = ? AND date = ? AND start_time = ?')
+          .bind(newEventId, id, e.date, e.startTime)
+          .run();
+      }
+    }
+
     return c.json({ success: true, data: { upserted: stmts.length, skipped } });
   } catch (err) {
     console.error('PUT /api/casts/:id/schedules error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// POST /api/casts/_sync-all-to-gcal — 既存の配信予定を一括でGoogleカレンダーに同期
+// (google_event_id が NULL で status != 'off' なもの全件)
+casts.post('/api/casts/_sync-all-to-gcal', async (c) => {
+  try {
+    const result = await c.env.DB
+      .prepare(`SELECT cs.cast_id, cs.date, cs.start_time, cs.end_time, cs.status, cs.notes,
+                       c.stripchat_username, c.display_name
+                FROM cast_schedules cs
+                INNER JOIN casts c ON c.id = cs.cast_id
+                WHERE cs.google_event_id IS NULL
+                  AND cs.status != 'off'
+                  AND c.status = '在籍'
+                ORDER BY cs.date ASC`)
+      .all<{
+        cast_id: string; date: string; start_time: string; end_time: string | null;
+        status: string; notes: string | null;
+        stripchat_username: string; display_name: string | null;
+      }>();
+
+    const rows = result.results ?? [];
+    let succeeded = 0;
+    let failed = 0;
+    const errors: string[] = [];
+
+    for (const row of rows) {
+      try {
+        const castLabel = row.display_name || row.stripchat_username;
+        const eventId = await gcalUpsertEvent(c.env, {
+          castId: row.cast_id, castLabel,
+          date: row.date,
+          startTime: row.start_time,
+          endTime: row.end_time,
+          status: row.status,
+          notes: row.notes,
+        }, null);
+        if (eventId) {
+          await c.env.DB
+            .prepare('UPDATE cast_schedules SET google_event_id = ? WHERE cast_id = ? AND date = ? AND start_time = ?')
+            .bind(eventId, row.cast_id, row.date, row.start_time)
+            .run();
+          succeeded++;
+        } else {
+          failed++;
+          errors.push(`${row.cast_id} ${row.date} ${row.start_time}: gcal returned null`);
+        }
+      } catch (err) {
+        failed++;
+        errors.push(`${row.cast_id} ${row.date}: ${err instanceof Error ? err.message : 'failed'}`);
+      }
+    }
+
+    return c.json({
+      success: true,
+      data: { total: rows.length, succeeded, failed, errors: errors.slice(0, 10) },
+    });
+  } catch (err) {
+    console.error('POST /api/casts/_sync-all-to-gcal error:', err);
+    return c.json({ success: false, error: err instanceof Error ? err.message : 'failed' }, 500);
   }
 });
 
@@ -773,10 +868,21 @@ casts.delete('/api/casts/:id/schedules', async (c) => {
     if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       return c.json({ success: false, error: 'date (YYYY-MM-DD) required' }, 400);
     }
+    // Google Calendar イベントID取得 → DB削除前に取得
+    const existing = await c.env.DB
+      .prepare('SELECT google_event_id FROM cast_schedules WHERE cast_id = ? AND date = ? AND start_time = ?')
+      .bind(id, date, startTime)
+      .first<{ google_event_id: string | null }>();
+
     await c.env.DB
       .prepare('DELETE FROM cast_schedules WHERE cast_id = ? AND date = ? AND start_time = ?')
       .bind(id, date, startTime)
       .run();
+
+    if (existing?.google_event_id) {
+      await gcalDeleteEvent(c.env, existing.google_event_id);
+    }
+
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/casts/:id/schedules error:', err);

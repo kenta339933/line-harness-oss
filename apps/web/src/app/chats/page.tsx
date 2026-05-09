@@ -12,6 +12,7 @@ interface Chat {
   friendId: string
   friendName: string
   friendPictureUrl: string | null
+  friendRegisteredAt?: string | null
   isFollowing?: boolean
   operatorId: string | null
   status: 'unread' | 'in_progress' | 'resolved'
@@ -32,6 +33,7 @@ interface ChatMessage {
 interface ChatDetail extends Chat {
   friendName: string
   friendPictureUrl: string | null
+  friendRegisteredAt?: string | null
   isFollowing?: boolean
   messages?: ChatMessage[]
 }
@@ -305,6 +307,11 @@ export default function ChatsPage() {
   const [notes, setNotes] = useState('')
   const [savingNotes, setSavingNotes] = useState(false)
   const [showLoadingIndicator, setShowLoadingIndicator] = useState(false)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [casts, setCasts] = useState<Array<any>>([])
+  const [showCastLinkModal, setShowCastLinkModal] = useState(false)
+  const [castLinkSelection, setCastLinkSelection] = useState<string>('')
+  const [castLinkSaving, setCastLinkSaving] = useState(false)
   const [loadingSeconds, setLoadingSeconds] = useState(5)
   const lastLoadingTriggerAtRef = useRef<Record<string, number>>({})
   const [isMessageInputFocused, setIsMessageInputFocused] = useState(false)
@@ -312,6 +319,11 @@ export default function ChatsPage() {
   const imageInputRef = useRef<HTMLInputElement>(null)
   const [showOptions, setShowOptions] = useState(false)
   const [showStatusMenu, setShowStatusMenu] = useState(false)
+  const messagesContainerRef = useRef<HTMLDivElement>(null)
+  // 直前のメッセージ件数: 増えた時だけ自動スクロール
+  const prevMessageCountRef = useRef<number>(0)
+  // 自分が送信したばかりかのフラグ（強制スクロール用）
+  const justSentRef = useRef<boolean>(false)
 
   const handleSendImage = async (file: File) => {
     if (!selectedChatId || sendingImage) return
@@ -333,6 +345,7 @@ export default function ChatsPage() {
         messageType: 'image',
         content: JSON.stringify({ originalContentUrl: url, previewImageUrl: url }),
       })
+      justSentRef.current = true
       loadChatDetail(selectedChatId)
       loadChats()
     } catch {
@@ -405,12 +418,87 @@ export default function ChatsPage() {
     }
   }, [])
 
+  // キャスト一覧取得（紐付けUI用）
+  useEffect(() => {
+    if (!selectedAccountId) return
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    fetchApi<{ success: boolean; data?: Array<any> }>(
+      `/api/casts?lineAccountId=${encodeURIComponent(selectedAccountId)}`
+    ).then((res) => {
+      if (res.success && res.data) setCasts(res.data)
+    }).catch(() => {})
+  }, [selectedAccountId])
+
+  // 現在のチャットに紐付けられているキャスト
+  const linkedCast = chatDetail ? casts.find((c) => c.lineFriendId === chatDetail.friendId) : null
+
+  const handleCastLink = async () => {
+    if (!chatDetail) return
+    setCastLinkSaving(true)
+    try {
+      // 1. 既に紐付いているキャストがあれば解除（同じfriendIdが複数キャストに紐付くのを防ぐ）
+      if (linkedCast && linkedCast.id !== castLinkSelection) {
+        await fetchApi(`/api/casts/${linkedCast.id}`, {
+          method: 'PUT',
+          body: JSON.stringify({ ...linkedCast, lineFriendId: null }),
+        })
+      }
+      // 2. 新しい紐付け（castLinkSelectionが空なら解除のみで終了）
+      if (castLinkSelection) {
+        const target = casts.find((c) => c.id === castLinkSelection)
+        if (target) {
+          await fetchApi(`/api/casts/${target.id}`, {
+            method: 'PUT',
+            body: JSON.stringify({ ...target, lineFriendId: chatDetail.friendId }),
+          })
+        }
+      }
+      // 3. キャスト一覧を再取得
+      const res = await fetchApi<{ success: boolean; data?: typeof casts }>(
+        `/api/casts?lineAccountId=${encodeURIComponent(selectedAccountId || '')}`
+      )
+      if (res.success && res.data) setCasts(res.data)
+      setShowCastLinkModal(false)
+    } catch {
+      setError('キャスト紐付けに失敗しました。')
+    } finally {
+      setCastLinkSaving(false)
+    }
+  }
+
   useEffect(() => {
     loadChats()
   }, [loadChats])
 
+  // メッセージ件数が増えた時 or 自分が送信した直後だけ最下端へスクロール
+  // それ以外（過去ログ参照中の polling 等）はユーザーのスクロール位置を維持
+  useEffect(() => {
+    const count = chatDetail?.messages?.length ?? 0
+    const prev = prevMessageCountRef.current
+    const container = messagesContainerRef.current
+    if (!container) {
+      prevMessageCountRef.current = count
+      return
+    }
+    // 別チャットへ切替時 (prev=0 から count>0) or 件数増加時 or 送信直後
+    const isNewChat = prev === 0 && count > 0
+    const hasNewMessage = count > prev
+    if (justSentRef.current || isNewChat || hasNewMessage) {
+      // 直後に再描画完了するのを待ってからスクロール
+      requestAnimationFrame(() => {
+        if (messagesContainerRef.current) {
+          messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight
+        }
+      })
+      justSentRef.current = false
+    }
+    prevMessageCountRef.current = count
+  }, [chatDetail])
+
   useEffect(() => {
     if (selectedChatId) {
+      // 別チャット切替時はカウンタをリセット（初期スクロール用）
+      prevMessageCountRef.current = 0
       loadChatDetail(selectedChatId)
     } else {
       setChatDetail(null)
@@ -449,6 +537,7 @@ export default function ChatsPage() {
         content: messageContent.trim(),
       })
       setMessageContent('')
+      justSentRef.current = true
       loadChatDetail(selectedChatId)
       loadChats()
     } catch {
@@ -493,20 +582,22 @@ export default function ChatsPage() {
   return (
     <div>
       {/* チャット選択中はモバイルでヘッダー非表示で画面を稼ぐ */}
-      <div className={selectedChatId || selectedFriendId ? 'hidden lg:block' : ''}>
+      <div className={selectedChatId || selectedFriendId ? 'hidden lg:block' : 'lg:block px-4 sm:px-6 lg:px-0'}>
         <Header title="オペレーターチャット" />
       </div>
 
       {/* Error */}
       {error && (
-        <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+        <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm mx-4 sm:mx-6 lg:mx-0">
           {error}
         </div>
       )}
 
-      <div className="flex gap-4 h-[calc(100dvh-132px-env(safe-area-inset-bottom))] lg:h-[calc(100vh-180px)]">
+      {/* スマホはfixed配置で画面端から端まで（header 48px下〜nav 56+safe上）
+          デスクトップは通常のflexレイアウト */}
+      <div className="fixed inset-x-0 top-12 bottom-[calc(56px+env(safe-area-inset-bottom))] flex lg:static lg:bottom-auto lg:gap-4 lg:h-[calc(100vh-180px)]">
         {/* Left Panel: Chat List */}
-        <div className={`w-full lg:w-96 lg:flex-shrink-0 bg-white rounded-lg shadow-sm border border-gray-200 flex-col overflow-hidden ${selectedChatId ? 'hidden lg:flex' : 'flex'}`}>
+        <div className={`w-full lg:w-96 lg:flex-shrink-0 bg-white lg:rounded-lg lg:shadow-sm lg:border lg:border-gray-200 flex-col overflow-hidden ${selectedChatId ? 'hidden lg:flex' : 'flex'}`}>
           {/* Status Filter Tabs */}
           <div className="flex border-b border-gray-200">
             {statusFilters.map((filter) => (
@@ -583,7 +674,15 @@ export default function ChatsPage() {
                               </span>
                             )}
                           </div>
-                          <p className="text-xs text-gray-400 mt-0.5">{formatDatetime(chat.lastMessageAt)}</p>
+                          <div className="flex items-center gap-2 mt-0.5">
+                            <p className="text-xs text-gray-400">
+                              {chat.lastMessageAt ? formatDatetime(chat.lastMessageAt) : (
+                                chat.friendRegisteredAt
+                                  ? <>登録: {new Date(chat.friendRegisteredAt).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</>
+                                  : '—'
+                              )}
+                            </p>
+                          </div>
                         </div>
                         <span className={`ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium flex-shrink-0 ${statusInfo.className}`}>
                           {statusInfo.label}
@@ -598,7 +697,7 @@ export default function ChatsPage() {
         </div>
 
         {/* Right Panel: Chat Detail */}
-        <div className={`flex-1 bg-white rounded-lg shadow-sm border border-gray-200 flex-col overflow-hidden ${selectedChatId || selectedFriendId ? 'flex' : 'hidden lg:flex'}`}>
+        <div className={`flex-1 bg-white lg:rounded-lg lg:shadow-sm lg:border lg:border-gray-200 flex-col overflow-hidden ${selectedChatId || selectedFriendId ? 'flex' : 'hidden lg:flex'}`}>
           {selectedFriendId && !selectedChatId ? (
             /* Direct message to friend without existing chat */
             <DirectMessagePanel
@@ -652,6 +751,25 @@ export default function ChatsPage() {
                           ブロック中
                         </span>
                       )}
+                      {chatDetail.friendRegisteredAt && (
+                        <span className="text-[10px] text-gray-400">
+                          登録: {new Date(chatDetail.friendRegisteredAt).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                      )}
+                      <button
+                        onClick={() => {
+                          setCastLinkSelection(linkedCast?.id || '')
+                          setShowCastLinkModal(true)
+                        }}
+                        className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border transition-colors ${
+                          linkedCast
+                            ? 'bg-blue-50 text-blue-700 border-blue-300 hover:bg-blue-100'
+                            : 'bg-gray-50 text-gray-600 border-gray-300 hover:bg-gray-100'
+                        }`}
+                        title={linkedCast ? `紐付け済み: ${linkedCast.stripchatUsername}` : 'キャストと紐付け'}
+                      >
+                        👤 {linkedCast ? linkedCast.stripchatUsername : 'キャスト紐付け'}
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -727,7 +845,11 @@ export default function ChatsPage() {
               </div>
 
               {/* Messages — LINE-style chat bubbles */}
-              <div className="flex-1 overflow-y-auto p-4 space-y-2" style={{ backgroundColor: '#7494C0' }}>
+              <div
+                ref={messagesContainerRef}
+                className="flex-1 overflow-y-auto p-4 space-y-2"
+                style={{ backgroundColor: '#7494C0' }}
+              >
                 {(!chatDetail.messages || chatDetail.messages.length === 0) ? (
                   <div className="text-center py-8">
                     <p className="text-white/60 text-sm">メッセージはまだありません。</p>
@@ -952,6 +1074,51 @@ export default function ChatsPage() {
         </div>
       </div>
       <CcPromptButton prompts={ccPrompts} />
+
+      {/* キャスト紐付けモーダル */}
+      {showCastLinkModal && chatDetail && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setShowCastLinkModal(false)}>
+          <div className="bg-white rounded-lg shadow-xl max-w-md w-full p-5" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-base font-bold text-gray-900 mb-1">キャスト紐付け</h3>
+            <p className="text-xs text-gray-500 mb-4">
+              {chatDetail.friendName} を、どのキャストと紐付けますか？
+            </p>
+            <select
+              value={castLinkSelection}
+              onChange={(e) => setCastLinkSelection(e.target.value)}
+              className="w-full text-sm border border-gray-300 rounded px-3 py-2 mb-4"
+            >
+              <option value="">紐付けを解除</option>
+              {casts.map((c) => {
+                const isLinkedToOther = c.lineFriendId && c.lineFriendId !== chatDetail.friendId
+                return (
+                  <option key={c.id} value={c.id} disabled={isLinkedToOther}>
+                    {c.stripchatUsername}
+                    {c.displayName ? ` (${c.displayName})` : ''}
+                    {isLinkedToOther ? ' ※他の友だちに紐付け済み' : ''}
+                  </option>
+                )
+              })}
+            </select>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setShowCastLinkModal(false)}
+                disabled={castLinkSaving}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded hover:bg-gray-200 disabled:opacity-50"
+              >
+                キャンセル
+              </button>
+              <button
+                onClick={handleCastLink}
+                disabled={castLinkSaving}
+                className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50"
+              >
+                {castLinkSaving ? '保存中…' : '確定'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -88,6 +88,9 @@ export default function FriendTable({ friends, allTags, onRefresh }: FriendTable
             (t) => !friend.tags.some((ft) => ft.id === t.id)
           )
           const refCode = (friend as unknown as { refCode?: string }).refCode
+          const entryRouteName = (friend as unknown as { entryRouteName?: string }).entryRouteName
+          const entryRouteCategory = (friend as unknown as { entryRouteCategory?: string }).entryRouteCategory
+          const categoryEmoji = entryRouteCategory === '広告' ? '📢' : entryRouteCategory === 'リファラル' ? '👥' : entryRouteCategory === 'SNS' ? '🌐' : ''
           return (
             <li key={friend.id}>
               <button
@@ -117,10 +120,22 @@ export default function FriendTable({ friends, allTags, onRefresh }: FriendTable
                       <p className="text-xs text-gray-400 truncate">{friend.statusMessage}</p>
                     )}
                     <div className="flex flex-wrap items-center gap-1 mt-1">
-                      {refCode && (
-                        <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700">
-                          {refCode}
+                      {entryRouteName ? (
+                        <span
+                          className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700"
+                          title={`登録経路: ${entryRouteCategory ? entryRouteCategory + ' / ' : ''}${entryRouteName}（refCode: ${refCode}）`}
+                        >
+                          {categoryEmoji} {entryRouteName}
                         </span>
+                      ) : refCode ? (
+                        <span
+                          className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-700"
+                          title="登録経路の定義なし。/entry-routes で登録するとここに表示されます"
+                        >
+                          {refCode}（未定義）
+                        </span>
+                      ) : (
+                        <span className="text-[10px] text-gray-400">登録経路: 不明</span>
                       )}
                       {friend.tags.map((tag) => <TagBadge key={tag.id} tag={tag} />)}
                       <span className="text-[11px] text-gray-400 ml-auto">{formatDate(friend.createdAt)}</span>
@@ -226,6 +241,10 @@ export default function FriendTable({ friends, allTags, onRefresh }: FriendTable
             const availableTags = allTags.filter(
               (t) => !friend.tags.some((ft) => ft.id === t.id)
             )
+            const refCode = (friend as unknown as { refCode?: string }).refCode
+            const entryRouteName = (friend as unknown as { entryRouteName?: string }).entryRouteName
+            const entryRouteCategory = (friend as unknown as { entryRouteCategory?: string }).entryRouteCategory
+            const categoryEmoji = entryRouteCategory === '広告' ? '📢' : entryRouteCategory === 'リファラル' ? '👥' : entryRouteCategory === 'SNS' ? '🌐' : ''
 
             return (
               <>
@@ -273,14 +292,24 @@ export default function FriendTable({ friends, allTags, onRefresh }: FriendTable
                   {/* Tags + Ref */}
                   <td className="px-4 py-3">
                     <div className="flex flex-wrap gap-1">
-                      {(friend as unknown as { refCode?: string }).refCode && (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700">
-                          {(friend as unknown as { refCode: string }).refCode}
+                      {entryRouteName ? (
+                        <span
+                          className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700"
+                          title={`refCode: ${refCode}`}
+                        >
+                          {categoryEmoji} {entryRouteName}
                         </span>
-                      )}
+                      ) : refCode ? (
+                        <span
+                          className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700"
+                          title="登録経路の定義なし"
+                        >
+                          {refCode}
+                        </span>
+                      ) : null}
                       {friend.tags.length > 0 ? (
                         friend.tags.map((tag) => <TagBadge key={tag.id} tag={tag} />)
-                      ) : !((friend as unknown as { refCode?: string }).refCode) ? (
+                      ) : !refCode ? (
                         <span className="text-xs text-gray-400">なし</span>
                       ) : null}
                     </div>

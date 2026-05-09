@@ -388,12 +388,9 @@ function FormEditor({ existing, lineAccountId, onClose, onSaved }: EditorProps) 
                   {HAS_OPTIONS.includes(f.type) && (
                     <div>
                       <label className="block text-[10px] font-medium text-gray-600 mb-0.5">選択肢（1行=1項目）</label>
-                      <textarea
-                        value={(f.options ?? []).join('\n')}
-                        onChange={(e) => updateField(idx, { options: e.target.value.split('\n').map((s) => s.trim()).filter(Boolean) })}
-                        rows={3}
-                        placeholder="選択肢A&#10;選択肢B&#10;選択肢C"
-                        className="w-full text-sm border border-gray-300 rounded px-2 py-1"
+                      <OptionsTextarea
+                        value={f.options ?? []}
+                        onChange={(opts) => updateField(idx, { options: opts })}
                       />
                     </div>
                   )}
@@ -430,6 +427,24 @@ function FormEditor({ existing, lineAccountId, onClose, onSaved }: EditorProps) 
 
 // ───── Form Preview ─────
 // LIFFのフォーム表示と同じ見た目をモック
+// 選択肢編集用textarea — 非制御コンポーネント方式
+// 制御コンポーネントだと filter(Boolean) で改行削除が暴走し iOS Safari でカーソルがずれる。
+// defaultValue で初期化、onChange は親state にだけ反映、textarea 自身は再描画しない。
+function OptionsTextarea({ value, onChange }: { value: string[]; onChange: (opts: string[]) => void }) {
+  return (
+    <textarea
+      defaultValue={value.join('\n')}
+      onChange={(e) => {
+        const opts = e.target.value.split('\n').map((s) => s.trim()).filter(Boolean)
+        onChange(opts)
+      }}
+      rows={3}
+      placeholder="選択肢A&#10;選択肢B&#10;選択肢C"
+      className="w-full text-sm border border-gray-300 rounded px-2 py-1"
+    />
+  )
+}
+
 function FormPreview({ name, description, fields }: { name: string; description: string; fields: FormField[] }) {
   if (fields.length === 0) {
     return (

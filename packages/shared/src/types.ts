@@ -535,6 +535,10 @@ export interface Operator {
 export interface Chat {
   id: string;
   friendId: string;
+  friendName?: string;
+  friendPictureUrl?: string | null;
+  friendRegisteredAt?: string | null;
+  isFollowing?: boolean;
   operatorId: string | null;
   status: "unread" | "in_progress" | "resolved";
   notes: string | null;

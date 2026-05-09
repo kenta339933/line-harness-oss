@@ -86,17 +86,25 @@ friends.get('/api/friends', async (c) => {
     const total = totalRow?.count ?? 0;
 
     const listStmt = db.prepare(
-      `SELECT f.* FROM friends f ${where} ORDER BY f.created_at DESC LIMIT ? OFFSET ?`,
+      `SELECT f.*, er.name AS entry_route_name, er.category AS entry_route_category
+       FROM friends f
+       LEFT JOIN entry_routes er ON er.ref_code = f.ref_code
+       ${where} ORDER BY f.created_at DESC LIMIT ? OFFSET ?`,
     );
     const listBinds = [...binds, limit, offset];
-    const listResult = await listStmt.bind(...listBinds).all<DbFriend>();
+    const listResult = await listStmt.bind(...listBinds).all<DbFriend & { entry_route_name?: string | null; entry_route_category?: string | null }>();
     const items = listResult.results;
 
     // Fetch tags for each friend in parallel so the list response includes tags
     const itemsWithTags = await Promise.all(
       items.map(async (friend) => {
         const tags = await getFriendTags(db, friend.id);
-        return { ...serializeFriend(friend), tags: tags.map(serializeTag) };
+        return {
+          ...serializeFriend(friend),
+          entryRouteName: friend.entry_route_name ?? null,
+          entryRouteCategory: friend.entry_route_category ?? null,
+          tags: tags.map(serializeTag),
+        };
       }),
     );
 
@@ -161,7 +169,7 @@ friends.get('/api/friends/ref-stats', async (c) => {
   }
 });
 
-// GET /api/friends/:id - get single friend with tags
+// GET /api/friends/:id - get single friend with tags + entry route
 friends.get('/api/friends/:id', async (c) => {
   try {
     const id = c.req.param('id');
@@ -176,10 +184,27 @@ friends.get('/api/friends/:id', async (c) => {
       return c.json({ success: false, error: 'Friend not found' }, 404);
     }
 
+    // 登録経路の解決
+    let entryRouteName: string | null = null;
+    let entryRouteCategory: string | null = null;
+    const refCode = (friend as unknown as Record<string, unknown>).ref_code as string | null;
+    if (refCode) {
+      const route = await db
+        .prepare('SELECT name, category FROM entry_routes WHERE ref_code = ?')
+        .bind(refCode)
+        .first<{ name: string; category: string | null }>();
+      if (route) {
+        entryRouteName = route.name;
+        entryRouteCategory = route.category;
+      }
+    }
+
     return c.json({
       success: true,
       data: {
         ...serializeFriend(friend),
+        entryRouteName,
+        entryRouteCategory,
         tags: tags.map(serializeTag),
       },
     });
