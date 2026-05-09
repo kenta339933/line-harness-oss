@@ -221,9 +221,17 @@ async function sendGoogleConversion(
     body: JSON.stringify(body),
   });
 
+  const responseText = await response.text();
+
   if (!response.ok) {
-    const errorBody = await response.text();
-    throw new Error(`Google Ads API error: ${response.status} ${errorBody}`);
+    throw new Error(`Google Ads API error: ${response.status} ${responseText}`);
+  }
+
+  let parsed: { partialFailureError?: { message?: string } } | null = null;
+  try { parsed = JSON.parse(responseText); } catch { /* keep null */ }
+
+  if (parsed?.partialFailureError) {
+    throw new Error(`Google Ads partialFailureError: ${parsed.partialFailureError.message ?? responseText}`);
   }
 }
 
