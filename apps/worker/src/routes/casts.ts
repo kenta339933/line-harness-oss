@@ -398,6 +398,33 @@ casts.put('/api/casts/:id', async (c) => {
       .prepare(`SELECT * FROM casts WHERE id = ?`)
       .bind(id)
       .first<CastRow>();
+
+    // ── Rich menu sync ─────────────────────────────────────────────
+    // When a cast is linked to a LINE friend, unlink the rich menu so
+    // they don't see the recruitment menu. When unlinked, the default
+    // rich menu (if any) is auto-restored by LINE.
+    try {
+      if (body.lineFriendId) {
+        const friend = await c.env.DB
+          .prepare(`SELECT line_user_id FROM friends WHERE id = ?`)
+          .bind(body.lineFriendId)
+          .first<{ line_user_id: string | null }>();
+        const account = await c.env.DB
+          .prepare(`SELECT channel_access_token FROM line_accounts WHERE id = ?`)
+          .bind(body.lineAccountId)
+          .first<{ channel_access_token: string | null }>();
+        if (friend?.line_user_id && account?.channel_access_token) {
+          await fetch(`https://api.line.me/v2/bot/user/${friend.line_user_id}/richmenu`, {
+            method: 'DELETE',
+            headers: { Authorization: `Bearer ${account.channel_access_token}` },
+          }).catch((err) => console.error('Rich menu unlink failed:', err));
+        }
+      }
+    } catch (err) {
+      console.error('Rich menu sync error:', err);
+      // Don't fail the cast update if rich menu sync fails
+    }
+
     return c.json({ success: true, data: row ? serialize(row) : null });
   } catch (err) {
     console.error('PUT /api/casts/:id error:', err);
