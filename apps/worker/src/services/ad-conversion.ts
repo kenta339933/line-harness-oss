@@ -194,7 +194,7 @@ async function sendGoogleConversion(
     return `${iso}+09:00`;
   })();
 
-  const url = `https://googleads.googleapis.com/v17/customers/${config.customer_id}:uploadClickConversions`;
+  const url = `https://googleads.googleapis.com/v21/customers/${config.customer_id}:uploadClickConversions`;
 
   const body = {
     conversions: [{
