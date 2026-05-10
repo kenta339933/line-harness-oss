@@ -871,12 +871,53 @@ export default function ChatsPage() {
 
                     // メッセージ表示の分岐
                     let bubbleContent: React.ReactNode
+                    const isMulti = msg.messageType === 'multi'
                     if (msg.messageType === 'flex') {
                       bubbleContent = (
                         <div className="max-w-[300px]">
                           <FlexPreviewComponent content={msg.content} maxWidth={280} />
                         </div>
                       )
+                    } else if (msg.messageType === 'multi') {
+                      try {
+                        const items = JSON.parse(msg.content) as Array<{ type: string; content: unknown }>
+                        if (Array.isArray(items)) {
+                          bubbleContent = (
+                            <div className="space-y-2">
+                              {items.map((item, i) => {
+                                const itemContent = typeof item.content === 'string' ? item.content : JSON.stringify(item.content)
+                                if (item.type === 'flex') {
+                                  return (
+                                    <div key={i} className="max-w-[300px]">
+                                      <FlexPreviewComponent content={itemContent} maxWidth={280} />
+                                    </div>
+                                  )
+                                }
+                                if (item.type === 'text') {
+                                  return (
+                                    <div
+                                      key={i}
+                                      className={`max-w-[320px] px-3 py-2 text-sm whitespace-pre-wrap ${
+                                        isOutgoing
+                                          ? 'rounded-tl-2xl rounded-tr-md rounded-bl-2xl rounded-br-2xl text-white'
+                                          : 'rounded-tl-md rounded-tr-2xl rounded-bl-2xl rounded-br-2xl bg-white text-gray-900'
+                                      }`}
+                                      style={isOutgoing ? { backgroundColor: '#06C755' } : undefined}
+                                    >
+                                      {itemContent}
+                                    </div>
+                                  )
+                                }
+                                return <span key={i} className="text-xs opacity-70">[{item.type}]</span>
+                              })}
+                            </div>
+                          )
+                        } else {
+                          bubbleContent = <span>[Multi Message]</span>
+                        }
+                      } catch {
+                        bubbleContent = <span>[Multi Message]</span>
+                      }
                     } else if (msg.messageType === 'image') {
                       try {
                         const parsed = JSON.parse(msg.content)
@@ -935,12 +976,14 @@ export default function ChatsPage() {
                         <div className={`flex flex-col ${isOutgoing ? 'items-end' : 'items-start'}`}>
                           {/* メッセージバブル */}
                           <div
-                            className={`max-w-[320px] px-3 py-2 text-sm break-words whitespace-pre-wrap ${
-                              isOutgoing
-                                ? 'rounded-tl-2xl rounded-tr-md rounded-bl-2xl rounded-br-2xl text-white'
-                                : 'rounded-tl-md rounded-tr-2xl rounded-bl-2xl rounded-br-2xl bg-white text-gray-900'
+                            className={`max-w-[320px] text-sm break-words whitespace-pre-wrap ${
+                              isMulti
+                                ? ''
+                                : isOutgoing
+                                  ? 'px-3 py-2 rounded-tl-2xl rounded-tr-md rounded-bl-2xl rounded-br-2xl text-white'
+                                  : 'px-3 py-2 rounded-tl-md rounded-tr-2xl rounded-bl-2xl rounded-br-2xl bg-white text-gray-900'
                             }`}
-                            style={isOutgoing ? { backgroundColor: '#06C755' } : undefined}
+                            style={isOutgoing && !isMulti ? { backgroundColor: '#06C755' } : undefined}
                           >
                             {bubbleContent}
                           </div>
