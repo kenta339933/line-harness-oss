@@ -888,7 +888,7 @@ export default function ChatsPage() {
                                 const itemContent = typeof item.content === 'string' ? item.content : JSON.stringify(item.content)
                                 if (item.type === 'flex') {
                                   return (
-                                    <div key={i} className="max-w-[300px]">
+                                    <div key={i}>
                                       <FlexPreviewComponent content={itemContent} maxWidth={280} />
                                     </div>
                                   )
@@ -976,12 +976,12 @@ export default function ChatsPage() {
                         <div className={`flex flex-col ${isOutgoing ? 'items-end' : 'items-start'}`}>
                           {/* メッセージバブル */}
                           <div
-                            className={`max-w-[320px] text-sm break-words whitespace-pre-wrap ${
+                            className={`text-sm break-words whitespace-pre-wrap ${
                               isMulti
-                                ? ''
+                                ? 'max-w-[640px]'
                                 : isOutgoing
-                                  ? 'px-3 py-2 rounded-tl-2xl rounded-tr-md rounded-bl-2xl rounded-br-2xl text-white'
-                                  : 'px-3 py-2 rounded-tl-md rounded-tr-2xl rounded-bl-2xl rounded-br-2xl bg-white text-gray-900'
+                                  ? 'max-w-[320px] px-3 py-2 rounded-tl-2xl rounded-tr-md rounded-bl-2xl rounded-br-2xl text-white'
+                                  : 'max-w-[320px] px-3 py-2 rounded-tl-md rounded-tr-2xl rounded-bl-2xl rounded-br-2xl bg-white text-gray-900'
                             }`}
                             style={isOutgoing && !isMulti ? { backgroundColor: '#06C755' } : undefined}
                           >

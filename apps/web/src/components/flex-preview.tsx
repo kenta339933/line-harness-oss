@@ -188,6 +188,7 @@ function FlexBubble({ bubble, maxWidth }: { bubble: FlexNode; maxWidth?: number 
   return (
     <div style={{
       width: w,
+      flexShrink: 0,
       backgroundColor: '#fff',
       borderRadius: '12px',
       overflow: 'hidden',
