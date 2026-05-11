@@ -255,7 +255,12 @@ app.get('/r/:ref', async (c) => {
   authParams.set('ref', ref);
   if (formId) authParams.set('form', formId);
   const poolParam = c.req.query('pool');
-  if (poolParam) authParams.set('pool', poolParam);
+  if (poolParam) {
+    authParams.set('pool', poolParam);
+  } else if (pool?.slug) {
+    // entry_route 経由で解決した pool を fallback URL にも引き継ぐ
+    authParams.set('pool', pool.slug);
+  }
   if (gate) authParams.set('gate', gate);
   if (xh) authParams.set('xh', xh);
   if (ig) authParams.set('ig', ig);
@@ -276,6 +281,10 @@ app.get('/r/:ref', async (c) => {
   const isXInAppBrowser = /twitter|twitterandroid/i.test(c.req.header('user-agent') || '');
   // Other in-app browsers (Instagram, FB, LINE itself, etc.) — same UL limitations
   const isOtherInApp = /\b(fbav|fban|instagram|line\/|micromessenger)\b/i.test(c.req.header('user-agent') || '');
+  // LINE in-app webview の場合、LIFF経由でアクセスすると LIFF→/auth/line→LIFF の無限ループに陥る。
+  // 同じLINEアプリ内なので OAuth (access.line.me) も問題なく開ける → メインボタンを直接 OAuth に向ける。
+  const isLineInApp = /\bline\//i.test(c.req.header('user-agent') || '');
+  const primaryUrl = isLineInApp ? authFallback : liffTarget;
 
   if (isMobile && (isXInAppBrowser || isOtherInApp)) {
     // In-app browser path: button first, fallback steps collapsed below
@@ -307,7 +316,7 @@ body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;backgroun
 <svg viewBox="0 0 48 48" fill="none"><rect width="48" height="48" rx="12" fill="#06C755"/><path d="M24 12C17.37 12 12 16.58 12 22.2c0 3.54 2.35 6.65 5.86 8.47-.2.74-.76 2.75-.87 3.17-.14.55.2.54.42.39.18-.12 2.84-1.88 4-2.65.84.13 1.7.22 2.59.22 6.63 0 12-4.58 12-10.2S30.63 12 24 12z" fill="#fff"/></svg>
 </div>
 <p class="title">LINE で友だち追加します</p>
-<a href="${liffTarget}" class="btn">このまま LINE を開く</a>
+<a href="${primaryUrl}" class="btn">このまま LINE を開く</a>
 <div class="fallback">
 <p class="fallback-title">うまく開けない場合は</p>
 <p>外部ブラウザ（Safari / Chrome）で開いてから「LINE で開く」をタップしてください。</p>
@@ -324,40 +333,10 @@ body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;backgroun
   }
 
   if (isMobile) {
-    // Regular mobile browser (Safari/Chrome): direct LIFF URL link
-    // User tap on liff.line.me triggers Universal Link → LINE app opens
-    return c.html(`<!DOCTYPE html>
-<html lang="ja">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>LINE で開く</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;background:#f5f7f5;display:flex;justify-content:center;align-items:center;min-height:100vh}
-.card{background:#fff;border-radius:20px;box-shadow:0 2px 20px rgba(0,0,0,0.06);text-align:center;max-width:360px;width:90%;padding:40px 28px 36px;border:1px solid rgba(0,0,0,0.04)}
-.line-icon{width:48px;height:48px;margin:0 auto 20px}
-.line-icon svg{width:48px;height:48px}
-.msg{font-size:15px;color:#444;font-weight:500;margin-bottom:28px;line-height:1.6}
-.btn{display:block;width:100%;padding:16px;border:none;border-radius:12px;font-size:16px;font-weight:700;text-decoration:none;text-align:center;color:#fff;background:#06C755;box-shadow:0 2px 12px rgba(6,199,85,0.2);transition:all .15s}
-.btn:active{transform:scale(0.98);opacity:.9}
-.fallback{font-size:12px;color:#999;margin-top:16px;line-height:1.5}
-.fallback a{color:#06C755}
-.footer{font-size:11px;color:#bbb;margin-top:16px;line-height:1.5}
-</style>
-</head>
-<body>
-<div class="card">
-<div class="line-icon">
-<svg viewBox="0 0 48 48" fill="none"><rect width="48" height="48" rx="12" fill="#06C755"/><path d="M24 12C17.37 12 12 16.58 12 22.2c0 3.54 2.35 6.65 5.86 8.47-.2.74-.76 2.75-.87 3.17-.14.55.2.54.42.39.18-.12 2.84-1.88 4-2.65.84.13 1.7.22 2.59.22 6.63 0 12-4.58 12-10.2S30.63 12 24 12z" fill="#fff"/></svg>
-</div>
-<p class="msg">LINE アプリで開きます</p>
-<a href="${liffTarget}" class="btn">LINE で開く</a>
-<p class="fallback">開かない場合は<a href="${authFallback}">こちら</a></p>
-<p class="footer">友だち追加で最新情報をお届けします</p>
-</div>
-</body>
-</html>`);
+    // Regular mobile browser (Safari/Chrome): immediate 302 to LIFF/OAuth URL.
+    // Universal Link launches LINE app directly without intermediate landing page.
+    // Intermediate landing page was the cause of 95% drop-off on the click→register funnel.
+    return c.redirect(primaryUrl, 302);
   }
 
   // PC: show QR code page — QR encodes LIFF URL directly
