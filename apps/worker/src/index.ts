@@ -219,6 +219,15 @@ app.get('/r/:ref', async (c) => {
     }
   }
 
+  // Ad click IDs and UTM params — pass through from LP so ref_tracking captures them
+  const gclid = c.req.query('gclid') || '';
+  const fbclid = c.req.query('fbclid') || '';
+  const twclid = c.req.query('twclid') || '';
+  const ttclid = c.req.query('ttclid') || '';
+  const utmSource = c.req.query('utm_source') || '';
+  const utmMedium = c.req.query('utm_medium') || '';
+  const utmCampaign = c.req.query('utm_campaign') || '';
+
   // Build LIFF URL with params (direct link for Universal Link)
   const liffIdMatch = liffUrl.match(/liff\.line\.me\/([0-9]+-[A-Za-z0-9]+)/);
   const liffParams = new URLSearchParams();
@@ -231,6 +240,13 @@ app.get('/r/:ref', async (c) => {
   if (xh) liffParams.set('xh', xh);
   const ig = c.req.query('ig');
   if (ig) liffParams.set('ig', ig);
+  if (gclid) liffParams.set('gclid', gclid);
+  if (fbclid) liffParams.set('fbclid', fbclid);
+  if (twclid) liffParams.set('twclid', twclid);
+  if (ttclid) liffParams.set('ttclid', ttclid);
+  if (utmSource) liffParams.set('utm_source', utmSource);
+  if (utmMedium) liffParams.set('utm_medium', utmMedium);
+  if (utmCampaign) liffParams.set('utm_campaign', utmCampaign);
   const liffTarget = liffParams.toString() ? `${liffUrl}?${liffParams.toString()}` : liffUrl;
 
   // Build /auth/oauth fallback URL — forces OAuth flow without X detection,
@@ -243,6 +259,13 @@ app.get('/r/:ref', async (c) => {
   if (gate) authParams.set('gate', gate);
   if (xh) authParams.set('xh', xh);
   if (ig) authParams.set('ig', ig);
+  if (gclid) authParams.set('gclid', gclid);
+  if (fbclid) authParams.set('fbclid', fbclid);
+  if (twclid) authParams.set('twclid', twclid);
+  if (ttclid) authParams.set('ttclid', ttclid);
+  if (utmSource) authParams.set('utm_source', utmSource);
+  if (utmMedium) authParams.set('utm_medium', utmMedium);
+  if (utmCampaign) authParams.set('utm_campaign', utmCampaign);
   const authFallback = `${baseUrl}/auth/oauth?${authParams.toString()}`;
 
   const ua = (c.req.header('user-agent') || '').toLowerCase();
