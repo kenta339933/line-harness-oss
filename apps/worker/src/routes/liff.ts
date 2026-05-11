@@ -18,6 +18,7 @@ import {
   jstNow,
 } from '@line-crm/db';
 import { buildIntroMessage } from '../services/intro-message.js';
+import { sendAdConversions } from '../services/ad-conversion.js';
 import type { Env } from '../index.js';
 
 const liffRoutes = new Hono<Env>();
@@ -881,6 +882,54 @@ liffRoutes.post('/api/liff/link', async (c) => {
       if (body.ref && !body.ref.startsWith('xh:')) {
         await db.prepare('UPDATE friends SET ref_code = ? WHERE id = ? AND ref_code IS NULL')
           .bind(body.ref, friend.id).run();
+
+        // Record ref tracking with ad click IDs / UTM (always insert a new row to capture re-visits)
+        try {
+          const route = await getEntryRouteByRefCode(db, body.ref);
+          await recordRefTracking(db, {
+            refCode: body.ref,
+            friendId: friend.id,
+            entryRouteId: route?.id ?? null,
+            sourceUrl: null,
+            gclid: body.gclid || null,
+            fbclid: body.fbclid || null,
+            twclid: body.twclid || null,
+            ttclid: body.ttclid || null,
+            utmSource: body.utm_source || null,
+            utmMedium: body.utm_medium || null,
+            utmCampaign: body.utm_campaign || null,
+          });
+        } catch { /* silent */ }
+
+        // Mirror ad click IDs to friend.metadata
+        const adMeta: Record<string, string> = {};
+        if (body.gclid) adMeta.gclid = body.gclid;
+        if (body.fbclid) adMeta.fbclid = body.fbclid;
+        if (body.twclid) adMeta.twclid = body.twclid;
+        if (body.ttclid) adMeta.ttclid = body.ttclid;
+        if (body.utm_source) adMeta.utm_source = body.utm_source;
+        if (body.utm_medium) adMeta.utm_medium = body.utm_medium;
+        if (body.utm_campaign) adMeta.utm_campaign = body.utm_campaign;
+        if (Object.keys(adMeta).length > 0) {
+          const existingMeta = await db
+            .prepare('SELECT metadata FROM friends WHERE id = ?')
+            .bind(friend.id)
+            .first<{ metadata: string }>();
+          const merged = { ...JSON.parse(existingMeta?.metadata || '{}'), ...adMeta };
+          await db
+            .prepare('UPDATE friends SET metadata = ?, updated_at = ? WHERE id = ?')
+            .bind(JSON.stringify(merged), jstNow(), friend.id)
+            .run();
+        }
+
+        // Send ad conversions (webhook may have run first without ref_tracking; this is the authoritative fire)
+        if (body.gclid || body.fbclid || body.twclid || body.ttclid) {
+          c.executionCtx.waitUntil(
+            sendAdConversions(db, friend.id, 'line_friend_added', 4800).catch((err) =>
+              console.error('sendAdConversions (alreadyLinked) failed:', err),
+            ),
+          );
+        }
       }
       // X Harness token resolution for already-linked friends
       if (body.ref && body.ref.startsWith('xh:')) {
@@ -972,6 +1021,15 @@ liffRoutes.post('/api/liff/link', async (c) => {
           .prepare('UPDATE friends SET metadata = ?, updated_at = ? WHERE id = ?')
           .bind(JSON.stringify(merged), jstNow(), friend.id)
           .run();
+      }
+
+      // Send ad conversions (webhook may have run first without ref_tracking; this is the authoritative fire)
+      if (body.gclid || body.fbclid || body.twclid || body.ttclid) {
+        c.executionCtx.waitUntil(
+          sendAdConversions(db, friend.id, 'line_friend_added', 4800).catch((err) =>
+            console.error('sendAdConversions (new link) failed:', err),
+          ),
+        );
       }
     }
 
