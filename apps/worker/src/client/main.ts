@@ -79,6 +79,29 @@ function getRef(): string | null {
   return params.get('ref');
 }
 
+/** Read query param from window.location, falling back to LIFF state if wrapped by OAuth */
+function getQueryParam(key: string): string | null {
+  const params = new URLSearchParams(window.location.search);
+  const direct = params.get(key);
+  if (direct) return direct;
+  const liffState = params.get('liff.state');
+  if (liffState) {
+    const inner = new URLSearchParams(liffState.startsWith('?') ? liffState.slice(1) : liffState);
+    return inner.get(key);
+  }
+  return null;
+}
+
+/** Collect ad click IDs + UTM params from URL (or LIFF state) */
+function getAdClickIds(): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const key of ['gclid', 'fbclid', 'twclid', 'ttclid', 'utm_source', 'utm_medium', 'utm_campaign']) {
+    const v = getQueryParam(key);
+    if (v) result[key] = v;
+  }
+  return result;
+}
+
 function getSavedUuid(): string | null {
   try {
     return localStorage.getItem(UUID_STORAGE_KEY);
@@ -220,6 +243,7 @@ async function linkAndAddFlow() {
     ]);
 
     // 1. UUID linking (always, regardless of friendship)
+    const adClickIds = getAdClickIds();
     const linkPromise = apiCall('/api/liff/link', {
       method: 'POST',
       body: JSON.stringify({
@@ -227,6 +251,7 @@ async function linkAndAddFlow() {
         displayName: profile.displayName,
         existingUuid: existingUuid,
         ref: ref,
+        ...adClickIds,
       }),
     }).then(async (res) => {
       if (res.ok) {

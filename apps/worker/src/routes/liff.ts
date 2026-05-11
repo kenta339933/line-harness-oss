@@ -54,11 +54,14 @@ liffRoutes.get('/auth/line', async (c) => {
 
   // X (Twitter) iOS in-app browser since v11.42 uses custom WKWebView that
   // blocks ALL Universal Links / deep links. Same for Instagram, Facebook,
-  // LINE in-app, WeChat. Redirect to /r/ which renders an explicit
-  // "Safariで開く" guidance UI. This is one-way — /r/'s OAuth fallback
-  // button targets /auth/oauth (not /auth/line), so no loop is possible.
+  // WeChat. Redirect to /r/ which renders an explicit "Safariで開く" guidance UI.
+  //
+  // NOTE: LINE自身のin-app browser (LIFF Browser) は除外する。LIFFがエンドポイントURL
+  // を呼ぶ時にUAに「line/」が入っており、ここでリダイレクトしてしまうと、
+  // /r/ → LIFF再オープン → /auth/line → 再リダイレクト の無限ループになる。
   const ua = c.req.header('user-agent') || '';
-  const isInAppBrowser = /twitter|twitterandroid|\b(fbav|fban|instagram|line\/|micromessenger)\b/i.test(ua);
+  const isLineInApp = /\bline\//i.test(ua);
+  const isInAppBrowser = !isLineInApp && /twitter|twitterandroid|\b(fbav|fban|instagram|micromessenger)\b/i.test(ua);
   if (isInAppBrowser && ref) {
     const url = new URL(c.req.url);
     const passthrough = new URLSearchParams();
@@ -827,6 +830,13 @@ liffRoutes.post('/api/liff/link', async (c) => {
       displayName?: string | null;
       ref?: string;
       existingUuid?: string;
+      gclid?: string;
+      fbclid?: string;
+      twclid?: string;
+      ttclid?: string;
+      utm_source?: string;
+      utm_medium?: string;
+      utm_campaign?: string;
     }>();
 
     if (!body.idToken) {
@@ -925,7 +935,7 @@ liffRoutes.post('/api/liff/link', async (c) => {
       await db.prepare('UPDATE friends SET ref_code = ? WHERE id = ? AND ref_code IS NULL')
         .bind(body.ref, friend.id).run();
 
-      // Record ref tracking
+      // Record ref tracking with ad click IDs / UTM
       try {
         const route = await getEntryRouteByRefCode(db, body.ref);
         await recordRefTracking(db, {
@@ -933,8 +943,36 @@ liffRoutes.post('/api/liff/link', async (c) => {
           friendId: friend.id,
           entryRouteId: route?.id ?? null,
           sourceUrl: null,
+          gclid: body.gclid || null,
+          fbclid: body.fbclid || null,
+          twclid: body.twclid || null,
+          ttclid: body.ttclid || null,
+          utmSource: body.utm_source || null,
+          utmMedium: body.utm_medium || null,
+          utmCampaign: body.utm_campaign || null,
         });
       } catch { /* silent */ }
+
+      // Mirror ad click IDs to friend.metadata for downstream automation
+      const adMeta: Record<string, string> = {};
+      if (body.gclid) adMeta.gclid = body.gclid;
+      if (body.fbclid) adMeta.fbclid = body.fbclid;
+      if (body.twclid) adMeta.twclid = body.twclid;
+      if (body.ttclid) adMeta.ttclid = body.ttclid;
+      if (body.utm_source) adMeta.utm_source = body.utm_source;
+      if (body.utm_medium) adMeta.utm_medium = body.utm_medium;
+      if (body.utm_campaign) adMeta.utm_campaign = body.utm_campaign;
+      if (Object.keys(adMeta).length > 0) {
+        const existingMeta = await db
+          .prepare('SELECT metadata FROM friends WHERE id = ?')
+          .bind(friend.id)
+          .first<{ metadata: string }>();
+        const merged = { ...JSON.parse(existingMeta?.metadata || '{}'), ...adMeta };
+        await db
+          .prepare('UPDATE friends SET metadata = ?, updated_at = ? WHERE id = ?')
+          .bind(JSON.stringify(merged), jstNow(), friend.id)
+          .run();
+      }
     }
 
     // X Harness token resolution: ref starting with "xh:" links X account to LINE friend
