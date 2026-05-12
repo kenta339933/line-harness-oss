@@ -294,7 +294,14 @@ async function linkAndAddFlow() {
 
     // 5. Friendship check — the key decision point
     if (!friendship.friendFlag) {
-      // Not a friend yet → show friend-add button
+      // Not a friend yet → skip LIFF UI and redirect to LINE native friend-add page.
+      // gclid is already persisted via /api/liff/link above (linkPromise awaited).
+      // This matches the legacy lin.ee/... UX (1-tap friend-add, no intermediate page).
+      if (BOT_BASIC_ID) {
+        window.location.href = `https://line.me/R/ti/p/${BOT_BASIC_ID}`;
+        return;
+      }
+      // Fallback when BOT_BASIC_ID resolution failed
       showFriendAdd(profile);
     } else {
       // Already a friend — check for form param
