@@ -50,7 +50,9 @@ import { overview } from './routes/overview.js';
 import { casts } from './routes/casts.js';
 import { castLiff } from './routes/cast-liff.js';
 import { entryRoutes } from './routes/entry-routes.js';
+import { adminSeed } from './routes/admin-seed.js';
 import { payslips } from './routes/payslips.js';
+import { introducerPayslips } from './routes/introducer-payslips.js';
 import { paidReadings } from './routes/paid-readings.js';
 
 export type Env = {
@@ -134,10 +136,12 @@ app.route('/', meetCallback);
 app.route('/', messageTemplates);
 app.route('/', overview);
 app.route('/', payslips);
+app.route('/', introducerPayslips);
 app.route('/', paidReadings);
 app.route('/', casts);
 app.route('/', castLiff);
 app.route('/', entryRoutes);
+app.route('/', adminSeed);
 
 // Self-hosted QR code proxy — prevents leaking ref tokens to third-party services
 app.get('/api/qr', async (c) => {
@@ -464,6 +468,24 @@ async function scheduled(
     }
   } catch (e) {
     console.error('Payslip retention sweep error:', e);
+  }
+
+  // 期限切れ introducer payslip ファイル削除（保持期限3年経過分）
+  try {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const expired = await env.DB.prepare(
+      `SELECT token, r2_key FROM introducer_payslip_tokens WHERE retention_until < ? LIMIT 100`
+    ).bind(nowSec).all<{ token: string; r2_key: string }>();
+    for (const row of (expired.results || [])) {
+      try {
+        await env.PAYSLIPS.delete(row.r2_key);
+        await env.DB.prepare('DELETE FROM introducer_payslip_tokens WHERE token = ?').bind(row.token).run();
+      } catch (e) {
+        console.error('Introducer payslip cleanup error:', row.token, e);
+      }
+    }
+  } catch (e) {
+    console.error('Introducer payslip retention sweep error:', e);
   }
 }
 
