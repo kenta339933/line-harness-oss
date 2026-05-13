@@ -50,7 +50,6 @@ import { overview } from './routes/overview.js';
 import { casts } from './routes/casts.js';
 import { castLiff } from './routes/cast-liff.js';
 import { entryRoutes } from './routes/entry-routes.js';
-import { adminSeed } from './routes/admin-seed.js';
 import { payslips } from './routes/payslips.js';
 import { introducerPayslips } from './routes/introducer-payslips.js';
 import { paidReadings } from './routes/paid-readings.js';
@@ -141,7 +140,6 @@ app.route('/', paidReadings);
 app.route('/', casts);
 app.route('/', castLiff);
 app.route('/', entryRoutes);
-app.route('/', adminSeed);
 
 // Self-hosted QR code proxy — prevents leaking ref tokens to third-party services
 app.get('/api/qr', async (c) => {
@@ -191,6 +189,22 @@ app.get('/r/:ref', async (c) => {
   const formId = c.req.query('form') || '';
   const baseUrl = new URL(c.req.url).origin;
 
+  // ─── Bypass intermediate LP for LINE in-app users ───────────
+  // チャトレ業界の知見：中間LPを挟むとLINE登録CV率が落ちる。
+  // LINE in-app から来たユーザーは entry_route.redirect_url が設定されてれば即302。
+  // 外部ブラウザは下のロジックでランディングページを表示（Universal Link発火が必要）。
+  {
+    const uaEarly = (c.req.header('user-agent') || '').toLowerCase();
+    const isLineInAppEarly = /\bline\//.test(uaEarly);
+    const isMobileEarly = /iphone|ipad|android|mobile/.test(uaEarly);
+    if (isMobileEarly && isLineInAppEarly) {
+      const route = await getEntryRouteByRefCode(c.env.DB, ref);
+      if (route?.redirect_url) {
+        return c.redirect(route.redirect_url, 302);
+      }
+    }
+  }
+
   // Resolve LIFF URL from pool (same logic as /auth/line)
   // Pool resolution priority:
   //   1. ?pool=... query param (explicit override)
@@ -198,6 +212,7 @@ app.get('/r/:ref', async (c) => {
   //   3. slug=main fallback
   let liffUrl = c.env.LIFF_URL;
   let pool: { id: string; slug: string; name: string; active_account_id: string | null; is_active: number; liff_id?: string | null } | null = null;
+  let resolvedAccessToken: string | null = null; // for bot_basic_id lookup
   const poolSlugQuery = c.req.query('pool');
   if (poolSlugQuery) {
     pool = await getTrafficPoolBySlug(c.env.DB, poolSlugQuery);
@@ -215,6 +230,7 @@ app.get('/r/:ref', async (c) => {
     const account = await getRandomPoolAccount(c.env.DB, pool.id);
     if (account) {
       if (account.liff_id) liffUrl = `https://liff.line.me/${account.liff_id}`;
+      resolvedAccessToken = (account as { channel_access_token?: string }).channel_access_token ?? null;
     } else {
       const allAccounts = await getPoolAccounts(c.env.DB, pool.id);
       if (allAccounts.length === 0) {
@@ -337,9 +353,33 @@ body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;backgroun
   }
 
   if (isMobile) {
-    // Regular mobile browser (Safari/Chrome): immediate 302 to LIFF/OAuth URL.
-    // Universal Link launches LINE app directly without intermediate landing page.
-    // Intermediate landing page was the cause of 95% drop-off on the click→register funnel.
+    // Regular mobile browser (Safari/Chrome): redirect straight to LINE's native
+    // add-friend URL (line.me/R/ti/p/{basicId}) — no LIFF, no login required.
+    //
+    // Why not LIFF: LIFF SDK forces liff.login() for users not logged into LINE
+    // in their mobile browser, which throws them to access.line.me (email/password
+    // login). Verified via screen recording 2026-05-13: 100% drop-off for users
+    // who hadn't already logged into LINE on their browser.
+    //
+    // Trade-off: we lose gclid → ref_tracking persistence for these users
+    // (no LIFF means no /api/liff/link call). CV1 (LINE button click via GTM)
+    // remains as the primary Smart Bidding signal.
+    let botBasicId = '';
+    if (resolvedAccessToken) {
+      try {
+        const botRes = await fetch('https://api.line.me/v2/bot/info', {
+          headers: { Authorization: `Bearer ${resolvedAccessToken}` },
+        });
+        if (botRes.ok) {
+          const bot = await botRes.json() as { basicId?: string };
+          botBasicId = bot.basicId || '';
+        }
+      } catch { /* fallthrough to LIFF */ }
+    }
+    if (botBasicId) {
+      return c.redirect(`https://line.me/R/ti/p/${botBasicId}`, 302);
+    }
+    // Fallback: LIFF (still better than the legacy intermediate page).
     return c.redirect(primaryUrl, 302);
   }
 
